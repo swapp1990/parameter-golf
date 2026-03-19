@@ -42,17 +42,17 @@ python train_gpt.py  # 1xRTX 5090
 |-----|--------|-------|---------|---------|
 | 1 | Baseline (batch=524K) | 94 | 3.10 | Batch too large for 1xRTX 5090 |
 | 2 | batch=65K, 180s | 1,785 | 1.46 | 12x speedup unlocked training |
-| 3 | seq_len=512 | 1,925 | 1.49 | Shorter sequences WORSE - model uses long context |
+| 3 | seq_len=512 | 1,925 | 1.49 | Shorter sequences WORSE — model uses long context |
 | 4 | 600s training | 5,964 | 1.35 | More training helps, warmdown phase effective |
-| 5a | 6L/624d architecture | 4,500 | 3.57 | FAILED - optimizer LR doesn't transfer across architectures |
+| 5a | 6L/624d architecture | 4,500 | 3.57 | FAILED — optimizer LR doesn't transfer across architectures |
 | 5 | batch=32K | 8,533 | 1.38 | Smaller batch WORSE despite more steps |
 | 6 | **1200s training** | **11,909** | **1.31** | **Best result. Warmdown disproportionately effective.** |
-| 7 | warmdown=2000, 1200s | - | - | Interrupted (RunPod outage) |
+| 7 | warmdown=2000, 1200s | — | — | Interrupted (RunPod outage) |
 
 ## Key Discoveries
 
 ### 1. Warmdown is the highest-leverage parameter
-The LR warmdown phase (cosine decay to zero) produces 2.6x the per-step BPB improvement compared to normal training. In Exp 6, the last 900 steps (warmdown) dropped BPB by 0.036 - more efficient than 3000 steps of normal training. This suggests longer warmdown periods (e.g., 2000-3000 iters) could significantly improve results.
+The LR warmdown phase (cosine decay to zero) produces 2.6x the per-step BPB improvement compared to normal training. In Exp 6, the last 900 steps (warmdown) dropped BPB by 0.036 — more efficient than 3000 steps of normal training. This suggests longer warmdown periods (e.g., 2000-3000 iters) could significantly improve results.
 
 ### 2. Hard tokens are word-initial predictions at syntactic boundaries
 Custom hard-token analysis revealed that ~65% of "very hard" tokens are word-initial (e.g., predicting which word follows "the" or ","). This is a context utilization problem, not a vocabulary or architecture issue.
@@ -66,19 +66,23 @@ Attempting a shallower/wider model (6L/624d) with the same Muon optimizer settin
 ## Plan with H100 Compute
 
 With 8xH100, we would:
-1. **Restore batch=524288** - 8x more tokens per step, ~49ms/step, ~12K steps in 600s
+1. **Restore batch=524288** — 8x more tokens per step, ~49ms/step, ~12K steps in 600s
 2. **Apply tuned warmdown** (warmdown_iters=3000) based on our discovery
 3. **Tune matrix_lr** (try 0.02-0.06 range based on competition findings)
 4. **Implement int6 quantization + zstd** to fit MLP 3x (~21M params in 16MB)
 5. **Add sliding window evaluation** (stride=64) for ~0.03 BPB improvement
-6. **Test SmearGate** - simple bigram blending for ~0.01 BPB
+6. **Test SmearGate** — simple bigram blending for ~0.01 BPB
 
 Expected result: **~1.18-1.22 BPB** based on competition baselines + our warmdown insights.
 
-## Custom Evaluation Tools
+## Analysis & Evaluation
 
-We built two evaluation tools during this project:
-- **deep_eval.py**: Structural analysis - loss distribution, position-by-position loss, layer ablation, bits budget
-- **hard_token_analyzer.py**: Token-level analysis - what makes tokens hard (word position, frequency, entropy, bigram transitions)
+We built custom evaluation tools and wrote detailed analysis documents that drove every experiment decision:
 
-These tools drove every experiment decision and are available in our [dashboard repo](https://github.com/swapp1990/parameter-golf/tree/main/dashboard/backend).
+- **[Experiment 6 Deep Analysis](https://github.com/swapp1990/parameter-golf/blob/main/dashboard/experiment6_analysis.md)** — Three-phase learning curve breakdown, warmdown efficiency analysis, compression trajectory, gap-to-target assessment
+- **[Hard Token Analysis](https://github.com/swapp1990/parameter-golf/blob/main/dashboard/hard_token_analysis.md)** — Why tokens are hard: word-initial dominance, entropy quadrants, always-hard vs context-dependent tokens, bigram transitions
+- **[Structural Evaluation](https://github.com/swapp1990/parameter-golf/blob/main/dashboard/evaluation_analysis.md)** — Position degradation, layer utilization (bathtub pattern), loss distribution across experiments
+
+Tools:
+- **[deep_eval.py](https://github.com/swapp1990/parameter-golf/blob/main/dashboard/backend/deep_eval.py)**: Loss distribution, position-by-position loss, layer ablation, bits budget
+- **[hard_token_analyzer.py](https://github.com/swapp1990/parameter-golf/blob/main/dashboard/backend/hard_token_analyzer.py)**: Token-level analysis — word position, frequency, entropy, bigram transitions

@@ -111,7 +111,7 @@ Target: **1.22 bpb**. Current best: **1.2987 bpb** (Experiment 8a, 11603 steps, 
 
 ---
 
-## Next Experiment: Experiment 9 — Layer Looping + Wider Model
+## Experiment 9 Results — Layer Looping + Wider Model (FAILED)
 
 ### Rationale
 
@@ -216,28 +216,137 @@ self.skip_weights = nn.Parameter(torch.ones(num_skip_weights, model_dim))
 - Expected: val_bpb ~1.27-1.29
 - Optimistic: val_bpb ~1.25
 
-### Decision rules after Exp 9
+### Exp 9 Result: val_bpb = 1.3327 (WORSE than 8a by 0.034)
 
-**If val_bpb < 1.27 (big improvement):**
-- Architecture change is working. Try even wider (5L/672d looped to 9) or longer training (2400s).
+- 8,892 steps at 134.96ms/step (vs 11,603 at 103.4ms for Exp 8a)
+- Model: 16,165,552 params, compressed 14,877,389 bytes
+- Layer map: [0,1,2,3,4,5,0,1,2] — 6 unique, looped to 9
+- LR sweep found MATRIX_LR=0.06 optimal (0.02=1.4955, 0.04=1.4732, 0.06=1.4701, 0.08=1.4699)
+- **Failed because:** 23% fewer steps (135ms vs 103ms/step due to wider dim), fewer total params (16.2M vs 17.1M)
 
-**If val_bpb 1.27-1.30 (modest improvement):**
-- Width helps but not enough alone. Try combining with longer training or different loop pattern.
-
-**If val_bpb >= 1.30 (no improvement):**
-- Layer looping doesn't help at this scale, or LR is still wrong. Try different loop mapping (only loop dead layers 4-6, keep 0,1,2,8 unique).
+### Exp 9 Lesson
+Layer looping with width increase is net negative at this scale. The step time overhead from wider dim (608 vs 512) costs more training steps than the parameter savings provide. The approach might work on 8xH100 where batch parallelism hides the latency.
 
 ---
 
-## Evaluation Plan for Experiment 9
+## Next Experiment: Experiment 10 — Competition Stack (SmearGate + Int6 + MLP 3x)
 
-Run `deep_eval.py` after training. Compare against Exp 8a.
+### Rationale
+
+After 9 experiments focused on training regime and architectural tweaks, the remaining BPB gap to the competition leaders (1.13-1.15 range) is explained by **techniques I haven't implemented yet**. The top 5 validated submissions all share a common stack. Instead of inventing new approaches, adopt the proven competition meta.
+
+The top stack from issue #140 analysis (used by 4 of top 5 validated):
+1. **SmearGate + BigramHash + OrthoInit** — Inject bigram context at embedding layer (~0.01-0.02 BPB)
+2. **Int6 quantization + zstd-22** — Fit ~21M params in 16MB instead of 17M with int8+zlib
+3. **MLP 3x expansion** — Use freed param budget for wider MLPs (1536 hidden vs 1024)
+4. **FP16 tied embedding** — Keep embedding in fp16, not quantized (most sensitive matrix)
+5. **Sliding window eval** — Score with overlapping 2048-token windows, stride=64 (~0.03 BPB free)
+6. **Muon weight decay 0.04** — Improves generalization + quantization friendliness
+
+### What changes from Exp 8a
+
+| Parameter | Exp 8a | Exp 10 | Why |
+|-----------|--------|--------|-----|
+| NUM_LAYERS | 9 | 9 | Keep same depth |
+| MODEL_DIM | 512 | 512 | Keep same width |
+| MLP_MULT | 2 | 3 | Int6 frees space for wider MLP |
+| Quantization | int8+zlib | int6+zstd-22 | ~25% better compression |
+| SmearGate | no | yes | Bigram context at embedding |
+| BigramHash | no | yes (4096 buckets, dim=128) | Token-pair embeddings |
+| OrthoInit | no (normal+zero) | yes | Required for SmearGate |
+| Weight Decay | 0 | 0.04 (Muon decoupled) | Quantization-friendly weights |
+| Eval | standard | sliding window stride=64 | ~0.03 BPB free improvement |
+| FP16 embed | no | yes | Protect tied embedding from quant |
+| TRAIN_SEQ_LEN | 1024 | 1024 | Keep same (2048 costs step time) |
+
+### Param budget with int6+zstd
+
+| Component | Params | Int6 bytes | Notes |
+|-----------|--------|-----------|-------|
+| tok_emb (fp16) | 524K | 1.0 MB | Passthrough, not quantized |
+| 9 blocks (Q,K,V,O,MLP) | ~20.5M | ~13.5 MB | Int6 per-row + zstd-22 |
+| Scales + control tensors | ~50K | ~0.1 MB | fp16/fp32 |
+| **Total** | **~21M** | **~14.6 MB** | Under 16MB with room |
+
+### Implementation
+
+**SmearGate** (~512 params):
+```python
+class SmearGate(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gate = nn.Parameter(torch.zeros(dim, dtype=torch.float32))
+    def forward(self, x):
+        g = torch.sigmoid(self.gate.to(dtype=x.dtype))[None, None, :]
+        x_prev = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1]], dim=1)
+        return (1 - g) * x + g * x_prev
+```
+
+**BigramHash** (~4096 * 128 + 128 * 512 = 590K params):
+```python
+class BigramHashEmbedding(nn.Module):
+    def __init__(self, bigram_vocab_size, bigram_dim, model_dim):
+        super().__init__()
+        self.bigram_vocab_size = bigram_vocab_size
+        self.embed = nn.Embedding(bigram_vocab_size, bigram_dim)
+        nn.init.zeros_(self.embed.weight)
+        self.proj = CastedLinear(bigram_dim, model_dim, bias=False)
+        nn.init.zeros_(self.proj.weight)
+        self.scale = nn.Parameter(torch.tensor(0.05, dtype=torch.float32))
+    def bigram_hash(self, tokens):
+        t = tokens.to(torch.int32)
+        mod = self.bigram_vocab_size - 1
+        out = torch.empty_like(t)
+        out[..., 0] = mod
+        out[..., 1:] = torch.bitwise_xor(36313 * t[..., 1:], 27191 * t[..., :-1]) % mod
+        return out.long()
+    def forward(self, token_ids):
+        h = self.embed(self.bigram_hash(token_ids))
+        h = self.proj(h)
+        return h * self.scale.to(dtype=h.dtype)
+```
+
+**OrthoInit**: orthogonal_(gain=1.0) for all Linear with dims >= 64, proj layers scaled by 1/sqrt(2*num_layers).
+
+**Int6 quantization**: per-row scale = abs_max / 31, quantize to [-32, 31] in int8 container.
+
+**Muon WD**: `p.data.mul_(1 - lr * wd)` before update in optimizer step.
+
+### Risks
+
+1. **torch.compile compatibility** — SmearGate uses cat+slice which may break fullgraph. Mitigated by testing with fullgraph=False first.
+2. **OrthoInit + existing init conflict** — The current code has both zero-init and normal-init paths. Need to carefully layer orthogonal on top.
+3. **Int6 quality loss** — 0.010 BPB quant penalty (vs 0.004 for int8). Mitigated by WD=0.04 shrinking weight magnitudes.
+4. **Step time increase** — MLP 3x adds FLOPs. Expect ~120-130ms/step vs 103ms. Offset by better per-step quality.
+5. **zstd dependency** — Need to pip install zstandard on the pod.
+
+### Hypothesis
+
+- **Expected: val_bpb ~1.22-1.25** on single GPU with sliding window eval
+- **Optimistic: val_bpb ~1.20** if all techniques compose well
+- **Pessimistic: val_bpb ~1.27** if int6 quality loss is worse than expected
+
+### Decision rules after Exp 10
+
+**If val_bpb < 1.22 (target reached):**
+- Success. Submit and iterate. Try SWA, longer training, or seq_len=2048.
+
+**If val_bpb 1.22-1.25 (close to target):**
+- Add SWA (stochastic weight averaging) during warmdown. Try Muon WD sweep.
+
+**If val_bpb >= 1.25 (disappointing):**
+- Debug: check int6 quant penalty, check SmearGate is actually helping via ablation.
+
+---
+
+## Evaluation Plan for Experiment 10
+
+Run deep_eval.py + sliding window eval after training.
 
 ### Key metrics to track
 
-1. **val_bpb**: Must beat 1.2987. Target: 0.01-0.03 improvement.
-2. **Layer utilization**: Are ALL layers now contributing? No more dead layers?
-3. **Position degradation**: Does wider model improve long-range context use?
-4. **Loss distribution**: Does wider model shift the hard token distribution?
-5. **Compression**: Must stay under 16 MB. Expect ~14.2MB.
-6. **ms/step**: Should be similar or faster (wider but fewer unique params to store).
+1. **val_bpb** (standard eval + sliding window eval): Target < 1.25
+2. **Int6 quant penalty**: Should be < 0.015 BPB
+3. **Layer utilization**: SmearGate should free up layers from bigram work
+4. **Hard token analysis**: Expect improvement on word-initial juncture tokens
+5. **Compression**: Must stay under 16 MB with int6+zstd

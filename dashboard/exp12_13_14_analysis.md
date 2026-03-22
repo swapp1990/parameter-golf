@@ -14,7 +14,7 @@ For short (300s) comparisons, Exp 11c control: val_bpb=1.4386 (int8+zlib), deep 
 | 11c (control) | ReLU² baseline | ~1,600 | 186 | 1.4386 | 1.2402 | — |
 | 12 (SWA) | + SWA every 100 steps | ~1,530 | 195 | 1.5402 | 1.3320 | **+0.092 (worse)** |
 | 13 (SwiGLU) | SwiGLU replaces ReLU² | ~1,550 | 193 | **1.4345** | **1.2351** | **-0.005 (better)** |
-| 14 (11L) | pending | — | — | — | — | — |
+| **14 (11L SwiGLU SWA)** | **+ 11L SwiGLU + SWA (2400s)** | **11,248** | **213** | **1.2702** | **1.0978** | **-0.142** |
 
 ---
 

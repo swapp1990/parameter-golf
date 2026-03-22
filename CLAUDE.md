@@ -45,6 +45,13 @@ ssh ... "/root/run_experiment.sh exp9 REGISTER_MODE=2 WARMDOWN_ITERS=3000 TRAIN_
   - `git checkout`, `python -c 'import ast; ...'` (syntax checks)
   - `kill`, `mv`, `cp`, `mkdir`
 
+## Checkpoint Management (CRITICAL)
+
+- After EVERY experiment completes, ALWAYS download the checkpoint (final_model.pt) to local machine BEFORE stopping the pod.
+- Save to: `D:/MyProjects/Claude/parameter-golf/dashboard/checkpoints/<exp_name>/`
+- Also download the training log.
+- Never stop a pod without first downloading the checkpoint — it may be on a non-shared volume and lost forever.
+
 ## RunPod Pod Management
 
 - When switching GPUs, use shared/network volumes so data persists across pods.

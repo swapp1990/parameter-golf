@@ -61,6 +61,30 @@ All experiments compared against a **control** run using Exp 15 config (11L SwiG
 | Head pruning | -0.002 to -0.005 | N/A (no dead heads) | No |
 | MLP removal L5-L7 | -0.001 to -0.003 | **+0.15 per layer** | No |
 
+---
+
+## Exp 17: XSA (Cross-token Self-Attention bias removal)
+
+### What it does
+After attention computes output y, subtract the self-value projection: `z = y - (dot(y,v)/dot(v,v)) * v`. Forces attention to contribute only contextual information, not redundant self-information. Applied to last 4 layers.
+
+### Result
+
+| Experiment | Steps | val_bpb | Delta vs Control |
+|-----------|-------|---------|-----------------|
+| Control | 496 | 1.6870 | — |
+| **XSA (last 4 layers)** | 492 | **1.6863** | **-0.0007 (noise)** |
+
+### Verdict: No effect at this scale
+The 0.0007 difference is within noise. Possible reasons:
+- The attention similarity bias may not be a bottleneck at 11L/512d scale (paper showed gains at 0.7B+)
+- SmearGate already provides strong local context, reducing the need for attention self-information
+- 490 steps is too few to show the effect (though Exp 16 experiments showed clear signals at similar step counts)
+
+XSA added ~7% step time overhead (665ms vs 622ms) for zero benefit.
+
+---
+
 ### What to do next
 
 Only two actionable findings:

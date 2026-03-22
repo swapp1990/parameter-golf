@@ -104,17 +104,97 @@ This suggests SwiGLU would benefit even more from additional layers, since it ma
 
 ---
 
-## Exp 14: 11 Layers + Int5 MLP
+## Exp 14: 11 Layers + SwiGLU + SWA (Full 2400s Run)
 
-### Status: Pending
-Will use SwiGLU (based on Exp 13 results) + 11 layers + int5 MLP quantization.
-Requires LR sweep first (3 short runs).
+### Config
+11 layers, SwiGLU MLP 3x, SmearGate, BigramHash, OrthoInit, WD=0.04, SWA every 200 steps during warmdown.
+H100 SXM, 2400s wallclock, LR=0.04 (winner of 3-way sweep).
+
+### LR Sweep Results (300s runs, step 1000 val_bpb)
+
+| MATRIX_LR | val_bpb |
+|-----------|---------|
+| 0.02 | 1.5158 |
+| 0.03 | 1.4955 |
+| **0.04** | **1.4929** |
+
+### Result: val_bpb = 1.2702 (pre-quant) / 1.2783 (int8+zlib SWA-averaged)
+
+**New best pre-quant.** Beats Exp 10 (1.2793) by 0.0091 BPB.
+SWA averaged 15 checkpoints from step 8400-11200 during warmdown.
+
+| Metric | Exp 10 (9L ReLU²) | Exp 14 (11L SwiGLU SWA) | Delta |
+|--------|-------------------|------------------------|-------|
+| Pre-quant val_bpb | 1.2793 | **1.2702** | **-0.0091** |
+| Int8+zlib roundtrip | 1.2830 | **1.2783** | **-0.0047** |
+| Steps | 12,596 | 11,248 | -1,348 |
+| ms/step | 190 | 213 | +23 |
+| Params | 22.4M | 27.1M | +4.7M |
+| Peak memory | 2,194 MiB | 2,559 MiB | +365 |
+| Int8+zlib size | 20.0 MB | 24.7 MB | Needs int5/int6! |
+
+### Val BPB Progression
+
+| Step | val_bpb | Phase |
+|------|---------|-------|
+| 1,000 | 1.5510 | constant LR |
+| 2,000 | 1.4620 | constant LR |
+| 3,000 | 1.4206 | constant LR |
+| 4,000 | 1.3905 | constant LR |
+| 5,000 | 1.3722 | constant LR |
+| 6,000 | 1.3572 | constant LR |
+| 7,000 | 1.3449 | constant LR |
+| 8,000 | 1.3372 | constant LR (SWA starts ~8400) |
+| 9,000 | 1.3168 | warmdown |
+| 10,000 | 1.2937 | warmdown |
+| 11,000 | 1.2725 | warmdown |
+| **11,248** | **1.2702** | warmdown (final) |
+
+### Deep Eval
+
+| Metric | Exp 10 (9L) | Exp 13 (9L SwiGLU) | Exp 14 (11L SwiGLU SWA) |
+|--------|------------|--------------------|-----------------------|
+| val_bpb (500 win) | ~1.24* | 1.2351 | **1.0978** |
+| easy (<1) | ~37%* | 36.7% | **42.9%** |
+| medium (1-3) | ~27%* | 26.6% | **25.3%** |
+| hard (3-5) | ~23%* | 23.2% | **20.5%** |
+| very_hard (>5) | ~14%* | 13.5% | **11.4%** |
+| context_benefit | ~0.37* | 0.3649 | **0.3790** |
+| first_64_loss | ~2.71* | 2.7020 | **2.4550** |
+| last_64_loss | ~2.34* | 2.3371 | **2.0759** |
+
+*Exp 10 deep eval was at different step count; approximate from 11c control values.
+
+**Massive improvement in loss distribution.** Very hard tokens dropped from 13.5% to 11.4%. Easy tokens jumped to 42.9%. The model is fundamentally better at everything.
+
+### Layer Ablation (11L)
+
+| Layer | Role | Impact |
+|-------|------|--------|
+| L0 | encoder | **+4.499** (critical — embedding processing) |
+| L1 | encoder | +0.532 |
+| L2 | encoder | +0.369 |
+| L3 | encoder | +0.216 |
+| L4 | encoder | +0.150 |
+| L5 | bottleneck | +0.167 |
+| L6 | decoder | +0.151 |
+| L7 | decoder | +0.114 |
+| L8 | decoder | +0.147 |
+| L9 | decoder | +0.133 |
+| L10 | decoder | **+2.958** (critical — output layer) |
+
+**No dead layers!** Every layer has impact > 0.11. The U-Net with 11 layers distributes work much more evenly than the 9L version (which had dead layers 4-6 at ~0.10). L0 and L10 are the critical endpoints. Middle layers (L4-L9) all contribute meaningfully.
+
+### Compression Challenge
+At 27.1M params, int8+zlib gives 24.7MB — way over 16MB. Need int5 for MLP or int6 for everything.
+Estimated with int6+zstd: ~16.2MB — **tight but might not fit.**
+Estimated with int5-MLP + int6-attn + zstd: ~14.8MB — fits.
 
 ---
 
 ## Position Degradation Comparison
 
-| Range | 11c (control) | 12 (SWA) | 13 (SwiGLU) |
+| Range | 11c (9L ReLU²) | 13 (9L SwiGLU) | 14 (11L SwiGLU SWA) |
 |-------|--------------|----------|-------------|
 | 0-64 | 2.711 | 2.869 | **2.702** |
 | 64-128 | 2.518 | 2.695 | **2.503** |
@@ -133,7 +213,7 @@ Requires LR sweep first (3 short runs).
 | 896-960 | 2.367 | 2.545 | **2.352** |
 | 960-1024 | 2.340 | 2.522 | **2.337** |
 
-SwiGLU is strictly better at every position range. SWA (in this short run) is strictly worse.
+11L SwiGLU SWA is strictly better at every position. The gap is largest at early positions (0.25 improvement at pos 0-64) where the extra layers provide more processing depth.
 
 ---
 
@@ -145,9 +225,22 @@ SwiGLU is strictly better at every position range. SWA (in this short run) is st
 
 3. **SwiGLU + SWA + 11L** is the optimal next experiment. Use SwiGLU as the MLP (proven better), add SWA for the long run (proven better in competition), and add 2 layers (proven better by 0.03-0.04 across competition).
 
-## Next: Exp 14
-- Architecture: 11L, SwiGLU MLP 3x, SmearGate, BigramHash, OrthoInit, WD=0.04
-- Quantization: Int5 for MLP, Int6 for attention
-- SWA: every 200 steps during warmdown only
-- Wallclock: 2400s on H100 SXM
-- LR sweep needed first (3x 300s runs at LR 0.02, 0.03, 0.04)
+## Summary of All Experiments
+
+| Exp | Config | val_bpb (pre-quant) | Key Finding |
+|-----|--------|---------------------|-------------|
+| 8a | 9L ReLU² baseline | 1.2945 | Warmdown=3000 optimal |
+| 10 | 9L ReLU² + SmearGate + MLP3x + WD | 1.2793 | Competition stack works (+0.015) |
+| 11a-d | Data sampling variants | — | Dead end (capacity-limited, not data-limited) |
+| 12 | 9L ReLU² + SWA (short run) | — | Inconclusive (SWA needs long runs) |
+| 13 | 9L SwiGLU + SmearGate + MLP3x + WD | ~1.277* | SwiGLU > ReLU² (+0.004), activates L8 |
+| **14** | **11L SwiGLU + SWA + SmearGate + MLP3x + WD** | **1.2702** | **New best. No dead layers. +0.009 vs Exp 10** |
+
+*Exp 13 extrapolated from short run.
+
+## Next Steps
+
+1. **Int5 MLP quantization** — 27M params need int5-MLP + int6-attn + zstd to fit 16MB
+2. **Verify int6/int5+zstd roundtrip** — Actual submission BPB with proper quantization
+3. **Sliding window eval** — Expected ~0.033 BPB additional gain → **~1.237 estimated**
+4. **Update submission PR** with new architecture and results

@@ -238,9 +238,119 @@ Estimated with int5-MLP + int6-attn + zstd: ~14.8MB — fits.
 
 *Exp 13 extrapolated from short run.
 
+## Exp 14 Deep Analysis
+
+### Training Phases
+
+| Step | val_bpb | BPB/1000 steps | Phase |
+|------|---------|----------------|-------|
+| 1,000 | 1.5510 | — | rapid descent |
+| 2,000 | 1.4620 | -0.0890 | rapid descent |
+| 3,000 | 1.4206 | -0.0414 | diminishing returns |
+| 4,000 | 1.3905 | -0.0301 | diminishing returns |
+| 5,000 | 1.3722 | -0.0183 | diminishing returns |
+| 6,000 | 1.3572 | -0.0150 | diminishing returns |
+| 7,000 | 1.3449 | -0.0123 | diminishing returns |
+| 8,000 | 1.3372 | -0.0077 | plateau (SWA starts ~8400) |
+| 9,000 | 1.3168 | **-0.0204** | warmdown (2.6x acceleration) |
+| 10,000 | 1.2937 | **-0.0231** | warmdown (3.0x acceleration) |
+| 11,000 | 1.2725 | **-0.0212** | warmdown |
+| 11,248 | **1.2702** | — | final |
+
+Warmdown acceleration: **2.6-3.0x** — slightly better than 9L's 2.3-2.6x. Deeper models benefit more from cosine LR decay.
+
+### Loss Distribution Shift
+
+| Bucket | Exp 10 (9L ReLU²) | Exp 13 (9L SwiGLU) | Exp 14 (11L SwiGLU SWA) |
+|--------|-------------------|--------------------|-----------------------|
+| easy (<1) | ~37% | 36.7% | **42.9%** (+5.9%) |
+| medium (1-3) | ~27% | 26.6% | **25.3%** (-1.7%) |
+| hard (3-5) | ~23% | 23.2% | **20.5%** (-2.5%) |
+| very_hard (>5) | ~14% | 13.5% | **11.4%** (-2.6%) |
+
+The model converted 5.9% of tokens from medium/hard/very_hard into easy. Every difficulty bucket improved.
+
+### Layer Ablation — No Dead Layers
+
+| Layer | Role | Impact | Bar | Notes |
+|-------|------|--------|-----|-------|
+| L0 | encoder | **+4.499** | ████████████████████████████████████████ | Critical: embedding processing |
+| L1 | encoder | +0.532 | █████ | Strong |
+| L2 | encoder | +0.369 | ███ | |
+| L3 | encoder | +0.216 | ██ | |
+| L4 | encoder | +0.150 | █ | |
+| L5 | bottleneck | +0.167 | █ | U-Net crossover |
+| L6 | decoder | +0.151 | █ | |
+| L7 | decoder | +0.114 | █ | Weakest but still active |
+| L8 | decoder | +0.147 | █ | |
+| L9 | decoder | +0.133 | █ | |
+| L10 | decoder | **+2.958** | █████████████████████████████ | Critical: output layer |
+
+**Zero dead layers.** In 9L (Exp 8a), layers 4-6 had impact ~0.10-0.14 (dead weight). The 11L model's weakest layer (L7 at 0.114) is still meaningfully contributing. U-Net skip connections with 5 encoder + 6 decoder layers distribute information flow evenly.
+
+L0 and L10 are the critical endpoints. L10's massive 2.96 impact is SwiGLU's contribution — the gating mechanism allows the final layer to do real feature selection instead of near-identity.
+
+### Position Degradation
+
+| Range | Exp 10 (9L) | Exp 14 (11L) | Delta |
+|-------|------------|-------------|-------|
+| 0-64 | ~2.71 | **2.455** | -0.255 |
+| 64-128 | ~2.52 | **2.235** | -0.285 |
+| 128-192 | ~2.43 | **2.145** | -0.285 |
+| 192-256 | ~2.41 | **2.124** | -0.286 |
+| 256-320 | ~2.38 | **2.102** | -0.278 |
+| 320-384 | ~2.36 | **2.091** | -0.269 |
+| 384-448 | ~2.36 | **2.092** | -0.268 |
+| 448-512 | ~2.35 | **2.077** | -0.273 |
+| 512-576 | ~2.33 | **2.056** | -0.274 |
+| 576-640 | ~2.37 | **2.101** | -0.269 |
+| 640-704 | ~2.37 | **2.088** | -0.282 |
+| 704-768 | ~2.37 | **2.094** | -0.276 |
+| 768-832 | ~2.36 | **2.090** | -0.270 |
+| 832-896 | ~2.33 | **2.063** | -0.267 |
+| 896-960 | ~2.37 | **2.081** | -0.289 |
+| 960-1024 | ~2.34 | **2.076** | -0.264 |
+
+**Uniform ~0.27 improvement at every position.** Extra depth doesn't specifically fix position degradation — it improves everything equally. The relative gap between early and late positions (context_benefit=0.379) is unchanged from 9L (~0.37). Fixing position degradation requires attention mechanism changes, not more depth.
+
+### Where the 0.009 BPB Improvement Came From
+
+| Source | Est. contribution |
+|--------|------------------|
+| +2 layers (11 vs 9) | ~0.005-0.006 |
+| SwiGLU (vs ReLU²) | ~0.002-0.003 |
+| SWA (15 checkpoints during warmdown) | ~0.001-0.002 |
+| **Total** | **~0.009** |
+
+### Compression Challenge
+
+27.1M params at int8+zlib = 24.7 MB — 8.7 MB over the 16 MB limit.
+
+| Strategy | Est. size | Fits? | Est. quant penalty |
+|----------|----------|-------|-------------------|
+| Int6 all + zstd-22 | ~16.2 MB | Barely no | ~0.010 |
+| Int5 MLP + Int6 attn + zstd-22 | ~14.8 MB | **Yes** | ~0.015-0.020 |
+| Int5 all + zstd-22 | ~13.5 MB | Yes | ~0.025-0.030 |
+
+Int5-MLP + Int6-attn is the proven approach (PR #180, 3rd place 1.1428 BPB).
+
+### Key Findings
+
+1. **11 layers eliminates dead layers.** 9L had 3 dead layers. 11L's weakest layer (L7) still has 0.114 impact.
+
+2. **Warmdown scales with depth.** 11L achieved 3.0x warmdown efficiency vs 9L's 2.3-2.6x.
+
+3. **SwiGLU + SWA compound.** SwiGLU activates L10 (2.96 impact). SWA smooths warmdown weights. Both additive.
+
+4. **Position degradation is architectural.** +2 layers improved every position by ~0.27 but didn't change the degradation pattern. Needs attention changes, not depth.
+
+5. **Int5 MLP quantization is mandatory.** 27M params at int8 = 24.7MB. Must use int5-MLP + int6-attn + zstd.
+
+---
+
 ## Next Steps
 
 1. **Int5 MLP quantization** — 27M params need int5-MLP + int6-attn + zstd to fit 16MB
-2. **Verify int6/int5+zstd roundtrip** — Actual submission BPB with proper quantization
+2. **Verify int5+int6+zstd roundtrip** — Actual submission BPB with proper quantization
 3. **Sliding window eval** — Expected ~0.033 BPB additional gain → **~1.237 estimated**
 4. **Update submission PR** with new architecture and results

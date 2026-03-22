@@ -229,19 +229,100 @@ Layer looping with width increase is net negative at this scale. The step time o
 
 ---
 
-## Next Experiment: Experiment 10 — Competition Stack (SmearGate + Int6 + MLP 3x)
+## Experiment 10 Results — Competition Stack (SmearGate + Int6 + MLP 3x)
 
-### Rationale
+**val_bpb = 1.2793 pre-quant / 1.2830 int8+zlib / ~1.246 with sliding window**
 
-After 9 experiments focused on training regime and architectural tweaks, the remaining BPB gap to the competition leaders (1.13-1.15 range) is explained by **techniques I haven't implemented yet**. The top 5 validated submissions all share a common stack. Instead of inventing new approaches, adopt the proven competition meta.
+Adopted the proven competition stack: SmearGate + BigramHash + OrthoInit + MLP 3x + Muon WD 0.04. Trained on H100 PCIe for 2400s (12,596 steps at 190ms/step). Model: 22.4M params, fits in 14.6MB with int6+zstd.
 
-The top stack from issue #140 analysis (used by 4 of top 5 validated):
-1. **SmearGate + BigramHash + OrthoInit** — Inject bigram context at embedding layer (~0.01-0.02 BPB)
-2. **Int6 quantization + zstd-22** — Fit ~21M params in 16MB instead of 17M with int8+zlib
-3. **MLP 3x expansion** — Use freed param budget for wider MLPs (1536 hidden vs 1024)
-4. **FP16 tied embedding** — Keep embedding in fp16, not quantized (most sensitive matrix)
-5. **Sliding window eval** — Score with overlapping 2048-token windows, stride=64 (~0.03 BPB free)
-6. **Muon weight decay 0.04** — Improves generalization + quantization friendliness
+Key findings:
+- Beats Exp 8a by 0.0157 BPB (1.2830 vs 1.2987)
+- Competition stack techniques are additive: MLP 3x (~0.008), SmearGate+BigramHash (~0.004), OrthoInit (~0.002), WD (~0.001)
+- Warmdown acceleration confirmed at 2.3x (consistent across all experiments)
+- WD=0.04 reduced int8 quant penalty from 0.0042 to 0.0037
+- Sliding window eval (stride=256) adds ~0.033 BPB improvement at eval time
+- BPB conversion for sliding window: use `val_loss / ln(2) * tokens_per_byte` where tokens_per_byte=0.4104 for this tokenizer
+
+Full analysis: [experiment10_analysis.md](experiment10_analysis.md)
+
+## Experiment 11 Results — Hard Token Data Sampling (FAILED)
+
+Tested 4 variants of training data manipulation to address diminishing returns after step 2000:
+- 11a: Juncture-enriched shards → +0.0016 worse (shard-level too coarse)
+- 11b: Rare bigram enriched → +0.0108 worse (reduced diversity hurts)
+- 11c: Control baseline → 1.4386 (reference)
+- 11d: Loss-based hard mining (one-time scoring at 80%, train on top 5%/25% hard) → catastrophic forgetting (wrong optimizer) then +0.0396 worse (corrected version)
+
+**Conclusion: Data sampling is a dead end.** Diminishing returns are capacity-limited, not data-limited. The model needs more layers/capacity, not different data. Post-hoc fine-tuning on filtered data disrupts Muon-optimized weight geometry regardless of LR, optimizer, or mix ratio.
+
+Full analysis: [exp11_hardtoken_sampling.md](exp11_hardtoken_sampling.md)
+
+### Updated confirmed facts after 11 experiments
+13. **Sliding window eval adds ~0.033 BPB** at eval time with stride=256, seq_len=1024
+14. **Data sampling/curriculum does not help** — all variants equal or worse than random
+15. **Post-hoc fine-tuning destroys Muon weight geometry** — even low-LR SGD/AdamW hurts
+16. **Int6+zstd fits 22.4M params in 14.6MB** — 1.4MB headroom under 16MB limit
+
+---
+
+## Next Experiments: 12, 13, 14
+
+### Experiment 12 — SWA (Stochastic Weight Averaging)
+
+**Rationale:** Average model weights across multiple checkpoints during warmdown phase. Produces smoother weight landscape that quantizes better. Used by 8/19 validated submissions. Nearly free — just accumulate and average, no extra training.
+
+**Implementation:**
+- During warmdown (last 3000 steps), save model state every 100 steps
+- After training, average all saved states
+- Use the averaged model for final eval and compression
+
+**Expected gain:** -0.005 to -0.01 BPB
+**Risk:** None — can always fall back to non-SWA checkpoint
+**Cost:** Same training run as Exp 10, just adds weight accumulation
+
+### Experiment 13 — SwiGLU (replace ReLU-squared)
+
+**Rationale:** SwiGLU is the standard MLP activation in modern LLMs (LLaMA, Mistral). It uses a gating mechanism that lets the model learn which features to pass through, generally more parameter-efficient than ReLU-squared.
+
+```python
+# Current (ReLU-squared):
+MLP(x) = proj(relu(fc(x))²)          # 2 matrices: fc, proj
+
+# SwiGLU:
+MLP(x) = proj(swish(gate(x)) * up(x))  # 3 matrices: gate, up, proj
+```
+
+SwiGLU needs 3 matrices vs 2, so at matched param count, hidden dim reduces from 1536 to ~1024. But quality-per-param is typically better.
+
+**Implementation:** Replace MLP class with SwiGLU variant. Keep total MLP params constant by adjusting hidden dim.
+
+**Expected gain:** -0.005 to -0.01 BPB
+**Risk:** Low — simple code change, no LR sweep needed (activation change is usually LR-stable)
+
+### Experiment 14 — 11 Layers + Int5 MLP
+
+**Rationale:** The single biggest architectural gain available. Competition data: 11L consistently beats 9L by 0.03-0.04 BPB across 5+ independent submissions. The param budget problem: 11L+MLP3x exceeds 16MB with int6. Solution: use int5 for MLP weights (range [-16,15]) and int6 for attention, matching PR #180 (3rd place, 1.1428 BPB).
+
+**Param budget:**
+- 11L × MLP 3x at int5-MLP/int6-attn + zstd-22 → ~15.5MB (fits)
+- Needs LR sweep (3 short runs at 0.02, 0.03, 0.04)
+
+**Implementation:**
+- Add 2 more layers (NUM_LAYERS=11)
+- Add int5 quantization for MLP weights
+- LR sweep then full 2400s run
+
+**Expected gain:** -0.03 to -0.04 BPB
+**Risk:** Medium — needs LR sweep, int5 quant penalty (~0.029) is higher than int6 (~0.010)
+
+### Combined projection
+
+| State | val_bpb (sliding window) |
+|-------|-------------------------|
+| Exp 10 (current) | ~1.246 |
+| + Exp 12 (SWA) | ~1.236-1.241 |
+| + Exp 13 (SwiGLU) | ~1.231-1.236 |
+| + Exp 14 (11L) | ~1.19-1.21 |
 
 ### What changes from Exp 8a
 

@@ -23,7 +23,7 @@ def load_results():
         return json.load(f)
 
 
-def color_for_loss(loss, vmin=0, vmax=8):
+def color_for_loss(loss, vmin=0, vmax=8, fmt="tuple"):
     """Green (low loss) → Yellow → Red (high loss)"""
     t = min(max((loss - vmin) / (vmax - vmin), 0), 1)
     if t < 0.25:
@@ -34,7 +34,9 @@ def color_for_loss(loss, vmin=0, vmax=8):
         r, g, b = 0.9, 0.5, 0.1  # orange
     else:
         r, g, b = 0.9, 0.2, 0.2  # red
-    return f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"
+    if fmt == "css":
+        return f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"
+    return (r, g, b)
 
 
 def main():
@@ -110,7 +112,7 @@ def main():
     bin_centers = [(float(b.split('-')[0]) + float(b.split('-')[1])) / 2 for b in bins]
 
     fig, ax = plt.subplots(figsize=(12, 4))
-    colors = [color_for_loss(bc) for bc in bin_centers]
+    colors = [color_for_loss(bc, fmt="tuple") for bc in bin_centers]
     ax.bar(bin_centers, counts, width=0.2, color=colors)
     ax.set_xlabel('Loss (nats)')
     ax.set_ylabel('Token Count')
@@ -135,7 +137,7 @@ def main():
 
         html_parts = []
         for tok in sample:
-            color = color_for_loss(tok['loss'])
+            color = color_for_loss(tok['loss'], fmt="css")
             text = tok['token'].replace('▁', ' ').replace('<', '&lt;').replace('>', '&gt;')
             loss_str = f"{tok['loss']:.2f}"
             html_parts.append(
@@ -256,7 +258,7 @@ def main():
         fig, ax = plt.subplots(figsize=(10, 5))
         labels = [t['token'].replace('▁', ' ') for t in tokens]
         costs = [t['total_cost'] for t in tokens]
-        colors_t = [color_for_loss(t['avg_loss']) for t in tokens]
+        colors_t = [color_for_loss(t['avg_loss'], fmt="tuple") for t in tokens]
         bars = ax.barh(labels[::-1], costs[::-1], color=colors_t[::-1])
         ax.set_xlabel('Total Cost (nats)')
         ax.set_title('Top 15 Tokens by Total Bits')

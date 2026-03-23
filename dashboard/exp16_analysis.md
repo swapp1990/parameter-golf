@@ -85,6 +85,40 @@ XSA added ~7% step time overhead (665ms vs 622ms) for zero benefit.
 
 ---
 
+---
+
+## Exp 18: XSA + Partial RoPE + EMA (Full Run)
+
+### Config
+Exp 17 stack + Partial RoPE (16/64 dims) + EMA (decay=0.997, every 10 steps) replacing SWA.
+1xH100 SXM, batch=524K, seq=2048, 4850s wallclock, 7,795 steps at 615ms/step.
+
+### Result: val_bpb = 1.1977 — WORSE than Exp 17 (1.1826) by 0.015
+
+| Step | Exp 17 (XSA) | Exp 18 (XSA+RoPE+EMA) | Gap |
+|------|-------------|----------------------|-----|
+| 1000 | 1.3348 | 1.3491 | +0.014 |
+| 2000 | 1.2719 | 1.2815 | +0.010 |
+| 3000 | 1.2453 | 1.2540 | +0.009 |
+| 4000 | 1.2294 | 1.2373 | +0.008 |
+| 5000 | 1.2179 | 1.2254 | +0.008 |
+| 6000 | 1.2006 | 1.2070 | +0.006 |
+| 7000 | 1.1840 | 1.1901 | +0.006 |
+| **Final** | **1.1826** | **1.1977** | **+0.015** |
+
+### Why it failed
+
+**Partial RoPE** caused a 0.014 BPP deficit at step 1000 that slowly narrowed to 0.006 by step 7000. The model was never able to fully compensate for having only 25% of dims carry positional information. This model (512d / 8 heads = 64 head_dim) simply doesn't have enough dimensions to sacrifice 75% to content-only matching.
+
+**EMA made the final result worse.** The gap was 0.006 during training but widened to 0.015 after EMA averaging. EMA (decay=0.997) over-smoothed the warmdown weights, losing sharp features. SWA's uniform average of 15 discrete checkpoints was better.
+
+### Verdict
+- **Partial RoPE: conclusively dead** for 64 head_dim. Might work at larger head_dim (128+).
+- **EMA: worse than SWA** at these settings. SWA remains the better weight averaging strategy.
+- **Exp 17 (XSA only) remains the best result at val_bpb = 1.1826.**
+
+---
+
 ### What to do next
 
 Only two actionable findings:

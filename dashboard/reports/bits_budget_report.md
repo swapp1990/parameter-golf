@@ -221,25 +221,26 @@ Avg Loss (nats)
 
 ### Realistic improvements from known techniques
 
-| Technique | Est. BPP Gain | What it targets |
-|-----------|--------------|-----------------|
-| Sliding window eval (stride=64) | **-0.020** | Position degradation (Section 3) |
-| Int5+Int6 quantization + QAT | **-0.010** | Quantization penalty |
-| Test-time training (TTT) | **-0.010 to -0.033** | Confident-wrong tokens (Section 5) |
-| Larger vocabulary (2048+) | **-0.005 to -0.015** | Word-initial ambiguity (Section 6) |
-| More parameters (12L or wider) | **-0.005 to -0.010** | Uncertain-wrong tokens (Section 5) |
-| Remove BigramHash + reallocate | **-0.002** | Free params |
-| **Total realistic** | **-0.05 to -0.09** | |
+| Technique | BPP Gain | Status | What it targets |
+|-----------|---------|--------|-----------------|
+| Sliding window eval (stride=256) | **-0.026** | **Measured** (1.1826 → ~1.157) | Position degradation (Section 3) |
+| Int5+Int6 quantization + QAT | **-0.010** | Not yet implemented | Quantization penalty |
+| Test-time training (TTT) | **-0.010 to -0.033** | Not yet implemented | Confident-wrong tokens (Section 5) |
+| Larger vocabulary (2048+) | **-0.005 to -0.015** | Not yet implemented | Word-initial ambiguity (Section 1) |
+| More parameters (12L or wider) | **-0.005 to -0.010** | Not yet implemented | Uncertain-wrong tokens (Section 5) |
+| Remove BigramHash + reallocate | **-0.002** | Validated (Exp 16: zero loss) | Free params |
+| **Total realistic** | **-0.06 to -0.10** | | |
 
 ### Verdict
 
-**Current**: 1.1826 BPP
-**Realistic target**: ~1.09-1.13 BPP (0.05-0.09 improvement)
-**Stretch target**: ~1.08 BPP (requires ALL techniques stacking perfectly)
+**Current (standard eval)**: 1.1826 BPP
+**With sliding window (already measured)**: ~1.157 BPP
+**Realistic target after all techniques**: ~1.06-1.10 BPP
+**Stretch target**: ~1.05 BPP (requires ALL techniques stacking perfectly)
 
-The 0.1 BPP target is at the edge of what's achievable. The single biggest levers are:
-1. **TTT** (if it works with SmearGate — competition data is mixed: -0.001 to -0.033)
-2. **Sliding window** (-0.020, guaranteed)
-3. **Quantization fix** (-0.010, required for submission anyway)
+The sliding window gain is already confirmed — that's 0.026 BPP for free at eval time. Starting from 1.157:
+1. **Int5+Int6 quantization + QAT** (-0.010) → ~1.147
+2. **TTT** (-0.010 to -0.033) → ~1.114-1.137
+3. **Larger vocabulary** (-0.005 to -0.015) → ~1.10-1.13
 
-These three alone give -0.04 to -0.06. Getting to -0.10 additionally requires vocabulary increase or significant architectural innovation.
+Getting to 1.08 requires TTT delivering its full -0.033 AND a vocabulary increase working well. Achievable but aggressive.

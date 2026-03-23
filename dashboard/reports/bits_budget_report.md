@@ -8,9 +8,17 @@
 
 ## 1. The Big Picture — Where the Bits Go
 
-The model spends bits (information) to predict each token. Easy tokens (like "the" after "of") cost almost nothing. Hard tokens (like which word starts a new sentence) cost a lot. Here's how the total budget breaks down:
+The model spends bits (information) to predict each token. Easy tokens (like "the" after "of") cost almost nothing. Hard tokens (like which word starts a new sentence) cost a lot.
 
-![Category Breakdown](chart1_category_breakdown.png)
+### Bits Budget by Category
+
+```
+                              % of Bits                    % of Tokens
+Easy (<1 nat)       ██                    3.5%    ████████████████         31.3%
+Medium (1-3 nats)   ██████████            21.6%   ██████████████           28.2%
+Hard Learnable      ██████████████████████████████████  67.0%   ██████████████████   37.2%
+Unpredictable (5+)  ████                  8.0%    ██                        3.4%
+```
 
 | Category | % of Tokens | % of Bits | Avg Loss | What it means |
 |----------|------------|-----------|----------|---------------|
@@ -27,141 +35,192 @@ The "unpredictable" floor uses 8% of bits on only 3.4% of tokens. These are our 
 
 ## 2. What the Losses Look Like — Distribution
 
-![Loss Distribution](chart2_loss_histogram.png)
+```
+Token Count
+  │
+  │ ████
+  │ █████
+  │ ██████
+  │ ████████
+  │ █████████
+  │ ██████████
+  │ ███████████░░░░░░░░
+  │ ████████████░░░░░░░░░░░░░░░
+  │ █████████████░░░░░░░░░░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+  ├────────┬─────────┬──────────┬───────────────────── Loss (nats)
+  0        1         3          5                    10
+       Easy     Medium       Hard        Unpredictable
+```
 
-This histogram shows how many tokens fall at each loss level. The peak is around 0-1 nats (easy tokens), with a long tail stretching past 8 nats (unpredictable tokens).
-
-The three dashed lines mark the category boundaries:
-- **1 nat**: Below this, the model is confident and correct
-- **3 nats**: Below this, the model is doing reasonable work
-- **5 nats**: Above this, the model is essentially guessing
-
-Notice the bump around 4-5 nats — that's the "hard learnable" peak. These tokens are where the model's capacity limit shows up. A bigger or smarter model could push this bump to the left.
+The peak is around 0-1 nats (easy tokens), with a long tail stretching past 8 nats. The bump around 4-5 nats is the "hard learnable" peak — this is where the model's capacity limit shows up. A bigger or smarter model could push this bump to the left.
 
 ---
 
-## 3. Position Matters — Early Tokens Are Harder
+## 3. Position Matters — Later Tokens Are Surprisingly Worse
 
-![Position Degradation](chart3_position.png)
+```
+Loss (nats)
+ 2.80 │                                                          ██████
+ 2.75 │                                                    ██████
+ 2.70 │                                              ██████
+ 2.65 │                                        ██████
+ 2.60 │                          ████████████████
+ 2.55 │                ██████████
+ 2.50 │  ████████████
+ 2.45 │        ██
+ 2.40 │
+      ├─────────────────────────────────────────────────────────────
+      0       256      512      768     1024    1280    1536    2048
+                        Position in 2048-token window
+```
 
-Tokens at the start of each 2048-token window have less context (fewer preceding tokens to condition on) and therefore higher loss. As position increases, the model has more context and predicts better.
+| Position Range | Avg Loss | Observation |
+|---------------|----------|-------------|
+| 0-128 | 2.525 | Moderate — fresh window start |
+| 128-256 | 2.445 | **Best** — enough context, coherent text |
+| 256-512 | 2.489 | Slightly worse |
+| 512-1024 | 2.558 | Getting worse |
+| 1024-1536 | 2.669 | Significantly worse |
+| 1536-2048 | 2.763 | **Worst** — 0.32 nats above best |
 
-Key observations:
-- **Position 0-128**: avg loss 2.52 — minimal context, worst performance
-- **Position 128-384**: avg loss 2.47 — improving as context builds
-- **Position 384-1024**: avg loss 2.55 — surprisingly, loss increases again
-- **Position 1024-2048**: avg loss 2.70 — worst positions
+**Surprising finding: later positions are WORSE, not better.** This is the opposite of what context theory predicts. The likely cause: the validation set is chunked into non-overlapping 2048-token windows. Late-window tokens may hit document boundaries or topic shifts within the window.
 
-Wait — **later positions are WORSE**, not better? This is the opposite of what you'd expect. The reason: the validation set is chunked into 2048-token non-overlapping windows. Each window starts at a different point in the document. The first ~256 tokens of each window have fresh context from the window start. But tokens past position 1024 might be hitting a different document or topic within the window, causing a "cold restart" effect.
-
-**This means sliding window evaluation (which gives every token ~2000 tokens of context) would disproportionately help the late-position tokens.** That's where the ~0.02 BPP sliding window improvement comes from.
+**This means sliding window evaluation helps most for late-position tokens** — giving them full 2048 context instead of partial window context.
 
 ---
 
 ## 4. The Most Expensive Bigrams
 
-![Top Bigrams](chart4_bigrams.png)
+These token pairs cost the most total bits (frequency × average loss):
 
-These are the token pairs that cost the most total bits across the validation set. The cost is frequency × average loss — a bigram that appears often and is moderately hard costs more than a rare one that's very hard.
+```
+. → The       ████████████████████████████████████████████  8,982  (n=4052, avg=2.22)
+, → and       █████████████████████████████████████████     7,833  (n=3541, avg=2.21)
+_ → 1         █████████████████████████████████████         7,479  (n=5682, avg=1.32)
+_ → 2         ██████████████████████████████                6,096  (n=5274, avg=1.16)
+. → A          ██████████████████████████                   5,454  (n=1736, avg=3.14)
+, → the        █████████████████████████                    5,315  (n=2006, avg=2.65)
+. → S          █████████████████████████                    5,250  (n=1754, avg=2.99)
+of → the       █████████████████████████                    5,155  (n=4806, avg=1.07)
+. → I          ████████████████████████                     5,100  (n=1904, avg=2.68)
+s → ,          ███████████████████████                      4,894  (n=2484, avg=1.97)
+```
 
-The top bigrams are:
-1. **`. → The`** (8,982 nats total): Sentence start after period — which word begins the new sentence?
-2. **`, → and`** (7,833 nats): After a comma — "and" is common but not always correct
-3. **`_ → 1`** and **`_ → 2`**: Numbers after spaces — inherently unpredictable
-
-The pattern is clear: **transitions after punctuation and function words** are the most expensive. The model knows a word is coming but can't predict WHICH word. This is the fundamental limitation of a 27M-param model — it lacks the capacity to model the full distribution of what follows common punctuation.
+**Transitions after punctuation dominate.** `. → The` is the single most expensive bigram — after a period, which word starts the next sentence? The model knows a sentence is starting but can't predict WHICH word. This is the fundamental capacity limitation of a 27M-param model.
 
 ---
 
 ## 5. Confidence vs Correctness
 
-![Entropy Quadrants](chart5_entropy_quadrants.png)
+```
+         ┌─────────────────────┬─────────────────────┐
+         │                     │                     │
+         │    CONFIDENT RIGHT  │   UNCERTAIN RIGHT   │
+  Right  │       38.0%         │       7.3%          │
+         │     (ideal)         │     (lucky)         │
+         │                     │                     │
+         ├─────────────────────┼─────────────────────┤
+         │                     │                     │
+         │   CONFIDENT WRONG   │  UNCERTAIN WRONG    │
+  Wrong  │      12.0%          │      42.7%          │
+         │  (calibration bug)  │  (capacity limit)   │
+         │                     │                     │
+         └─────────────────────┴─────────────────────┘
+              Confident              Uncertain
+```
 
-This chart splits all tokens into four groups based on two dimensions:
-- **Confident vs Uncertain**: Is the model's prediction distribution peaked (confident) or spread out (uncertain)?
-- **Right vs Wrong**: Did the model's top prediction match the actual token?
+| Quadrant | % of Tokens | What it means | How to fix |
+|----------|------------|---------------|------------|
+| Confident Right | 38.0% | Ideal — model knows and is correct | Already good |
+| Uncertain Right | 7.3% | Model guesses, happens to be right | More capacity helps |
+| **Confident Wrong** | **12.0%** | Model is sure but wrong | TTT, calibration, label smoothing |
+| **Uncertain Wrong** | **42.7%** | Model doesn't know, gets it wrong | More capacity, longer context |
 
-| Quadrant | % | What it means |
-|----------|---|---------------|
-| **Confident Right** (green) | 38.0% | Ideal — model knows and is correct |
-| **Uncertain Right** (light green) | 7.3% | Model guesses multiple options, happens to be right |
-| **Confident Wrong** (red) | 12.0% | **Danger zone** — model is sure but wrong. Calibration problem. |
-| **Uncertain Wrong** (orange) | 42.7% | Model doesn't know and gets it wrong. Capacity problem. |
+**42.7% of tokens are uncertain-wrong** — the model honestly doesn't know. These need more capacity (bigger model, more context) to improve.
 
-**42.7% of tokens are uncertain-wrong** — the model honestly doesn't know the answer. These tokens need more capacity (bigger model, more layers, more context) to improve. No calibration trick will fix them.
-
-**12.0% are confident-wrong** — the model THINKS it knows but is wrong. These are the highest-leverage targets for techniques like:
-- Test-time training (TTT) — adapt to the specific document
-- Better temperature/calibration — make the model less overconfident
-- Label smoothing — prevent the model from becoming too peaked on common patterns
+**12.0% are confident-wrong** — the model THINKS it knows but is wrong. These are the highest-leverage targets for test-time training (TTT), which adapts the model to each specific document.
 
 ---
 
 ## 6. Juncture Tokens — The Hardest Positions
 
-![Juncture Analysis](chart6_juncture.png)
+```
+Avg Loss (nats)
+  4.0  ████████████████████            ████████████████████
+       After Juncture                  Word-Initial
+       3.95                            3.97
 
-**Juncture tokens** (`,` `.` `the` `and` `to` `of` `in`) are syntactic boundaries. The token AFTER a juncture is hard to predict because the next word depends on broader meaning, not just local pattern.
+  2.5  ████████████████
+       Not After Juncture
+       2.44
 
-| Context | Avg Loss | Observation |
-|---------|----------|-------------|
-| After juncture (`, . the and`) | **3.95** | 62% harder |
-| Not after juncture | 2.44 | Normal |
-| Word-initial (starts with space) | **3.97** | 127% harder |
-| Word-middle/end | 1.75 | Easy |
+  1.7                                  █████████████
+                                       Word-Middle
+                                       1.75
+```
 
-Tokens after junctures are **11.6% of all tokens** but cost far more per token than average. This is where SmearGate helps — it provides bigram context so the model knows what the previous token was. But even with SmearGate, the gap remains 1.5 nats.
+| Context | Avg Loss | % of Tokens | Observation |
+|---------|----------|------------|-------------|
+| After juncture (`, . the and`) | **3.95** | 11.6% | 62% harder than average |
+| Not after juncture | 2.44 | 88.4% | Normal |
+| Word-initial (starts new word) | **3.97** | ~50% | 127% harder than word-middle |
+| Word-middle/end | 1.75 | ~50% | Easy — just completing a known word |
 
-Word-initial tokens (which start new words) are **2.3x harder** than word-middle tokens. This is the fundamental challenge of BPE tokenization with a 1024 vocabulary — the model must predict which of ~500 word-initial tokens comes next, often with ambiguous context.
+**Word-initial tokens after syntactic boundaries are where the model bleeds bits.** SmearGate provides bigram context (knowing the previous token) which helps, but the gap remains 1.5 nats. This is a vocabulary problem — with 1024 tokens, there are ~500 possible word-initial tokens, and the model can't narrow it down enough.
 
 ---
 
 ## 7. The Most Expensive Individual Tokens
 
-The tokens that cost the most total bits across the entire validation set:
+| Rank | Token | Total Cost | Count | Avg Loss | Why expensive |
+|------|-------|-----------|-------|----------|---------------|
+| 1 | `,` | 93,399 | 44,106 | 2.12 | Very frequent, moderately hard |
+| 2 | `.` | 88,994 | 43,533 | 2.04 | Very frequent, moderately hard |
+| 3 | `the` | 71,629 | 38,830 | 1.84 | Frequent, context-dependent |
+| 4 | `_` (space) | 63,647 | 26,230 | 2.43 | Precedes unknown words |
+| 5 | `and` | 60,500 | 21,831 | 2.77 | Common but not always predictable |
+| 6 | `a` | 57,893 | 20,150 | 2.87 | Which article? Context-dependent |
+| 7 | `in` | 52,802 | 16,290 | 3.24 | Preposition, many contexts |
+| 8 | `s` (word-initial) | 49,228 | 13,499 | 3.65 | Which s-word? Very ambiguous |
+| 9 | `p` (word-initial) | 47,446 | 13,178 | 3.60 | Which p-word? Very ambiguous |
+| 10 | `c` (word-initial) | 45,163 | 12,415 | 3.64 | Which c-word? Very ambiguous |
 
-| Token | Total Cost | Count | Avg Loss | Why expensive |
-|-------|-----------|-------|----------|---------------|
-| `,` | 93,399 | 44,106 | 2.12 | Very frequent, moderately hard |
-| `.` | 88,994 | 43,533 | 2.04 | Very frequent, moderately hard |
-| `the` | 71,629 | 38,830 | 1.84 | Frequent, context-dependent |
-| `_` (space) | 63,647 | 26,230 | 2.43 | Precedes unknown words |
-| `and` | 60,500 | 21,831 | 2.77 | Common but not always predictable |
-| `a` | 57,893 | 20,150 | 2.87 | Article — which article comes next? |
-| `in` | 52,802 | 16,290 | 3.24 | Preposition, many possible contexts |
-| `s` (word-initial) | 49,228 | 13,499 | 3.65 | Which s-word? Very ambiguous |
-| `p` (word-initial) | 47,446 | 13,178 | 3.60 | Which p-word? Very ambiguous |
-| `c` (word-initial) | 45,163 | 12,415 | 3.64 | Which c-word? Very ambiguous |
-
-**The most expensive tokens are function words and word-initial letters.** The function words (`,` `.` `the` `and`) are expensive because they're extremely frequent — even a small per-token loss adds up to a massive total. The word-initial letters (`s` `p` `c` `f` `m` `d`) are expensive because predicting which word starts with a given letter is very ambiguous with a 1024-token vocabulary.
+**Function words dominate by total cost** (frequency × loss). Word-initial letters (`s` `p` `c` `f` `m` `d`) are expensive per-token (3.6-4.0 avg loss) because predicting which word starts with a given letter is fundamentally ambiguous at 1024 vocabulary.
 
 ---
 
-## 8. Improvement Potential
+## 8. Improvement Potential — Can We Reach 1.08 BPP?
 
-Based on this analysis, here's where the bits can be recovered:
+### What's recoverable
 
-| Source | Current Cost | Theoretical Floor | Recoverable | How |
-|--------|-------------|-------------------|-------------|-----|
-| Unpredictable tokens | 8.0% of bits | 8.0% (floor) | 0% | Can't improve |
-| Hard learnable tokens | 67.0% of bits | ~40% (better model) | ~27% | More capacity, TTT, better arch |
-| Medium tokens | 21.6% of bits | ~15% (better model) | ~7% | Better training, longer context |
-| Easy tokens | 3.5% of bits | ~3% (near floor) | ~0.5% | Marginal |
-| Position degradation | ~0.3 nats gap | ~0.05 (sliding window) | ~0.02 BPP | Sliding window eval |
-| Quantization | +0.004 (int8) | 0 (fp32) | 0.004 BPP | QAT, selective precision |
+| Source | Current % of Bits | Floor | Recoverable |
+|--------|------------------|-------|-------------|
+| Unpredictable tokens | 8.0% | 8.0% (can't improve) | 0% |
+| Hard learnable | 67.0% | ~40% (better model) | ~27% |
+| Medium | 21.6% | ~15% (better model) | ~7% |
+| Easy | 3.5% | ~3% (near floor) | ~0.5% |
 
-**Total recoverable: ~0.15-0.20 BPP** (theoretical maximum with unlimited capacity).
+### Realistic improvements from known techniques
 
-**Realistic improvements from known techniques:**
-
-| Technique | Est. BPP gain | Targets which category? |
-|-----------|--------------|------------------------|
-| Sliding window eval (stride=64) | -0.020 | Position degradation |
-| Int5+Int6 quantization + QAT | -0.010 | Quantization penalty |
-| Test-time training (TTT) | -0.010 to -0.033 | Confident-wrong + document cold-start |
-| Larger vocabulary (2048+) | -0.005 to -0.015 | Word-initial ambiguity |
-| More parameters (12L or wider) | -0.005 to -0.010 | Uncertain-wrong (capacity) |
-| Remove BigramHash + reallocate | -0.002 | Free params |
+| Technique | Est. BPP Gain | What it targets |
+|-----------|--------------|-----------------|
+| Sliding window eval (stride=64) | **-0.020** | Position degradation (Section 3) |
+| Int5+Int6 quantization + QAT | **-0.010** | Quantization penalty |
+| Test-time training (TTT) | **-0.010 to -0.033** | Confident-wrong tokens (Section 5) |
+| Larger vocabulary (2048+) | **-0.005 to -0.015** | Word-initial ambiguity (Section 6) |
+| More parameters (12L or wider) | **-0.005 to -0.010** | Uncertain-wrong tokens (Section 5) |
+| Remove BigramHash + reallocate | **-0.002** | Free params |
 | **Total realistic** | **-0.05 to -0.09** | |
 
-**The 0.1 BPP target (1.18 → 1.08) is at the edge of what's achievable** with known techniques. It would require ALL of the above improvements stacking cleanly. The single biggest lever is TTT (if it works with SmearGate — competition data is mixed) or a vocabulary increase (high effort, high uncertainty).
+### Verdict
+
+**Current**: 1.1826 BPP
+**Realistic target**: ~1.09-1.13 BPP (0.05-0.09 improvement)
+**Stretch target**: ~1.08 BPP (requires ALL techniques stacking perfectly)
+
+The 0.1 BPP target is at the edge of what's achievable. The single biggest levers are:
+1. **TTT** (if it works with SmearGate — competition data is mixed: -0.001 to -0.033)
+2. **Sliding window** (-0.020, guaranteed)
+3. **Quantization fix** (-0.010, required for submission anyway)
+
+These three alone give -0.04 to -0.06. Getting to -0.10 additionally requires vocabulary increase or significant architectural innovation.

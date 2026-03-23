@@ -23,106 +23,101 @@ Consistent -0.003 to -0.005 BPP improvement across all training steps. L10 impac
 
 ## Addendum 1: Int5+Int6+Zstd Quantization
 
-**Status: Not started**
+**Status: Complete. val_bpb ≈ 1.191 (quantized, 15.0MB)**
 
 ### What
 Post-process the Exp 17 checkpoint to fit in 16MB:
 - MLP weights (gate, up, proj) → int5 (range [-16, 15], per-row scale)
 - Attention weights (Q, K, V, O) → int6 (range [-32, 31], per-row scale)
-- Tied embedding → fp16 passthrough
+- Tied embedding (tok_emb) → int8 (range [-128, 127], per-row scale)
 - Control tensors (scales, gates, gains) → fp16 passthrough
+- BigramHash removed (590K params, zero quality loss — confirmed by Exp 16)
 - Compress with zstd level 22
 
-### Why
-Current size: 24.7MB (int8+zlib). Competition limit: 16MB. Without this, we cannot submit. Int5 for MLP is safe — MLP weights are more quantization-tolerant than attention weights (confirmed by PR #180, 3rd place at 1.1428).
+### Result
 
-### Expected result
-- Size: ~14.8MB (under 16MB)
-- Quantization penalty: +0.015-0.020 BPP
-- Submission val_bpb: ~1.20 (still beats baseline 1.2244)
+| Metric | Value |
+|--------|-------|
+| Pre-quant val_loss | 1.9969 |
+| Quantized val_loss | **2.0111** |
+| Quant penalty | **+0.014 nats (+0.009 BPP)** |
+| Pre-quant val_bpb | 1.1826 |
+| Quantized val_bpb | **~1.191** |
+| Artifact size | **15.00 MB** |
+| Headroom | 212 KB |
 
-### Implementation
-1. Write `quantize_int5_per_row()` function (per-row scale = abs_max / 15)
-2. Write `quantize_state_dict_mixed()` — classify tensors by name pattern, apply int5 or int6
-3. Save as `final_model.mixed.ptz`
-4. Roundtrip validation: decompress → dequantize → eval val_bpb
-5. Verify total artifact size < 16MB
+Quantization penalty (+0.009 BPP) is lower than estimated (+0.015-0.020). Muon WD=0.04 makes weights quantization-friendly.
 
-### Run on
-Pod (needs validation data for roundtrip eval). ~5 min.
+**Key lesson:** Must include XSA in the eval forward pass — without it, val_loss jumps to 3.83 (model was trained WITH XSA, weights depend on it).
 
 ---
 
-## Addendum 2: Document-Aware TTT (Test-Time Training)
+## Addendum 2: Sliding Window Eval (on quantized model)
 
-**Status: Not started**
+**Status: Next — running on pod**
 
 ### What
-Adapt the model to each document during evaluation:
-1. For each document in the validation set (50,000 documents, separated by BOS token id=1):
-   - Do a quick forward pass over the document's text
-   - Compute gradients and update a small set of parameters (LoRA or full SGD)
-   - Score the document with the adapted model
-   - Reset weights for next document
+Score the quantized model using overlapping 2048-token windows with stride=256. Only the last 256 tokens per window are scored, ensuring each scored token has ~1792 tokens of context.
 
 ### Why
-Our document analysis found:
-- 50,000 documents, median length 733 tokens
-- First 50 tokens of each document cost 5.0 nats vs 4.1 nats settled (cold-start penalty ~0.9 nats)
-- 8% of all tokens are within the first 100 tokens of a document
-- Cold-start penalty accounts for up to ~0.07 BPP
+Standard eval uses non-overlapping windows where early tokens have minimal context. Sliding window gives every token rich context. Already measured on the pre-quant model:
+- Pre-quant standard: val_loss = 1.9969
+- Pre-quant sliding (stride=256): val_loss = 1.9531 (delta = -0.044)
+- BPP improvement: ~-0.026
 
-TTT reduces cold-start by "reading" the document before scoring it. The model learns the document's topic, vocabulary, and style.
+### Expected result on quantized model
+- Quantized standard: val_loss = 2.0111 → val_bpb ≈ 1.191
+- Quantized sliding: val_loss ≈ 2.0111 - 0.044 = ~1.967 → val_bpb ≈ **1.165**
+
+### Run on
+Pod with shared volume. Upload quantized model, run sliding eval, ~10 min.
+
+---
+
+## Addendum 3: Document-Aware TTT (Test-Time Training)
+
+**Status: After sliding window eval**
+
+### What
+Adapt the model to each document during evaluation. For each of the 50,000 documents (separated by BOS token id=1):
+1. Forward pass over the document's text
+2. Compute gradients, update parameters (LoRA or full SGD)
+3. Score the document with adapted weights
+4. Reset weights for next document
+
+### Why
+Document analysis found:
+- 50,000 documents, median length 733 tokens
+- Cold-start penalty: first 50 tokens cost 5.0 nats vs 4.1 settled (~0.9 nats gap)
+- 8% of all tokens are cold-start (first 100 of each document)
+- Theoretical ceiling: ~0.07 BPP
 
 ### Concern
-Competition data shows TTT + SmearGate = only -0.001 BPP (vs -0.033 without SmearGate). SmearGate may already capture what TTT provides. But our document analysis shows a clear cold-start signal that SmearGate doesn't address (SmearGate only uses the immediately previous token, not the document's overall topic).
+Competition data: TTT + SmearGate = only -0.001 BPP (vs -0.033 without SmearGate). Our model has SmearGate, so gain may be minimal.
 
 ### Expected result
 - Optimistic: -0.010 to -0.033 BPP
 - Realistic with SmearGate: -0.001 to -0.010 BPP
-- Combined with Addendum 1: submission val_bpb ~1.17-1.20
-
-### Implementation options
-1. **Full-model SGD**: Single epoch, LR=3e-4, momentum=0.95. Simple but slow (~200s eval budget).
-2. **LoRA TTT**: Rank-8 LoRA adapters, faster adaptation. Used by PR #77.
-3. **Stride-OGD**: Online gradient descent on vocab bias only. Lightest, fastest. PR #241.
 
 ### Run on
-Pod (needs full validation data + GPU for fast forward passes). ~10-20 min depending on TTT method.
-
----
-
-## Addendum 3: Sliding Window Eval (stride=64 or document-aware)
-
-**Status: Partially done (stride=256 measured at -0.026 BPP)**
-
-### What already measured
-- Standard eval: val_bpb = 1.1826
-- Sliding window stride=256: val_loss = 1.9531 → ~1.157 BPP (-0.026)
-
-### What to try
-- Stride=64: may give additional ~0.002 BPP (competition data says marginal vs stride=256)
-- Document-aware windowing: start each window at a `<s>` boundary
-
-### Result from quick test
-Document-isolated eval showed no improvement over standard eval (+0.0025, noise). Cross-document context isn't hurting — the model ignores irrelevant prior-document context.
+Pod. ~10-20 min depending on TTT method.
 
 ---
 
 ## Execution Order
 
-1. **Addendum 1 (int5+int6)** — Must do first. No submission without it.
-2. **Addendum 2 (TTT)** — Run on the quantized model to measure actual submission BPP.
-3. **Addendum 3 (sliding window)** — Already measured, apply at final eval.
+1. ~~**Addendum 1 (int5+int6)**~~ ✅ Done. val_bpb ≈ 1.191, 15.0MB.
+2. **Addendum 2 (sliding window)** ← Next. Clean baseline for TTT comparison.
+3. **Addendum 3 (TTT)** — If sliding window gives ~1.165, decide if TTT is worth the effort.
 
 ## Expected Final Submission
 
-| Component | BPP |
-|-----------|-----|
-| Exp 17 pre-quant | 1.1826 |
-| + Int5+Int6 quant penalty | +0.015 to +0.020 |
-| + Sliding window (stride=256) | -0.026 |
-| + TTT (if it works) | -0.001 to -0.033 |
-| **Estimated submission** | **1.17 to 1.20** |
+| Step | val_bpb | Status |
+|------|---------|--------|
+| Exp 17 pre-quant | 1.1826 | Done |
+| + Int5+Int6+Int8 quant | ~1.191 (+0.009) | ✅ Done |
+| + Sliding window (stride=256) | ~1.165 (-0.026) | Next |
+| + TTT (if it works) | ~1.13-1.16 (-0.001 to -0.033) | After sliding |
+| **Submission** | **1.13 to 1.17** | |
 
-Competition baseline: 1.2244. Our submission beats it regardless of TTT outcome.
+Competition baseline: 1.2244. We beat it at every step.

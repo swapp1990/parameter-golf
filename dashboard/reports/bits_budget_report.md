@@ -31,6 +31,140 @@ Unpredictable (5+)  ████                  8.0%    ██                
 
 The "unpredictable" floor uses 8% of bits on only 3.4% of tokens. These are our theoretical minimum — no amount of model improvement can reduce them.
 
+### What Are the Hard Learnable Tokens?
+
+The hard learnable category (67% of bits) breaks down into 5 sub-categories:
+
+```
+Word-initial letters (_s, _p, _c...)  ████████████████████████████████████  66.3%
+Function words (_in, _for, _that...)  ████████████                          20.0%
+Sentence starters (. → The, . → A)   ███                                    6.4%
+Multi-char word starts (_re, _con)    ██                                     3.6%
+Content after "the"                   ██                                     3.7%
+```
+
+#### A. Word-Initial Letters — 66% of hard bits
+
+The tokenizer splits most words into pieces. "something" becomes `_s` + `ome` + `thing`. The model must predict the first letter of each new word, but hundreds of words share the same first letter:
+
+```
+Text: "The cat sat on the ___"
+
+Model must predict: ▁s? ▁p? ▁c? ▁f? ▁m? ▁b? ...
+
+▁s could be: sofa, street, something, small, school, sun, situation, system...
+▁p could be: park, people, place, problem, position, political...
+▁c could be: cat, car, community, country, children, called...
+```
+
+The model knows "a word is coming" but can't narrow down WHICH word from just its first letter.
+
+| Token | Avg Loss | Appearances | Like asking... |
+|-------|----------|-------------|----------------|
+| `▁s` | 3.65 | 13,499 | "Which of 200 s-words comes next?" |
+| `▁p` | 3.60 | 13,178 | "Which of 180 p-words comes next?" |
+| `▁c` | 3.64 | 12,415 | "Which of 170 c-words comes next?" |
+| `▁f` | 3.81 | 10,711 | "Which of 120 f-words comes next?" |
+| `▁d` | 4.05 | 8,638 | "Which of 100 d-words comes next?" |
+
+**Solution:** Larger vocabulary (4096 tokens). Instead of splitting "something" into 3 tokens, store it as one token `_something`. The model no longer guesses letters — it predicts whole words.
+**Expected gain:** -0.010 to -0.015 BPP
+
+#### B. Sentence Starters — 6% of hard bits
+
+After a period, a new sentence begins. The model must guess what word starts it:
+
+```
+Text: "The weather was beautiful. ___"
+
+. → "The"     (continue topic)       loss = 2.22
+. → "A"       (new subject)          loss = 3.14
+. → "It"      (refer back)           loss = 3.67
+. → "This"    (demonstrative)        loss = 4.05
+. → "He"      (character action)     loss = 4.00
+```
+
+"The" is the easiest starter (loss 2.22) because it's so common. "This" and "He" are harder (loss 4.0) because predicting them requires understanding the document's narrative.
+
+**Solution:** Test-time training (TTT) — adapt the model to each document's style during evaluation, so it learns which sentence patterns this specific document uses.
+**Expected gain:** -0.003 to -0.010 BPP
+
+#### C. Content After "the" — 4% of hard bits
+
+After "the", a noun or adjective must follow. But which one?
+
+```
+Text: "She walked into the ___"
+
+the → ▁r  (room? restaurant? rain?)      loss = 3.1
+the → ▁s  (store? street? school?)        loss = 3.1
+the → ▁p  (park? parking? place?)         loss = 3.1
+the → ▁b  (building? bathroom? back?)     loss = 3.3
+```
+
+The model knows a noun is coming (because "the" always precedes nouns) but needs deep contextual understanding to predict WHICH noun. Is this text about a house, a city, a story?
+
+**Solution:** More capacity + longer context. The model needs to understand the topic of the surrounding text to narrow down the noun.
+**Expected gain:** -0.002 to -0.005 BPP
+
+#### D. Function Words — 20% of hard bits
+
+Small grammatical words (`in`, `for`, `that`, `a`, `I`) that appear everywhere:
+
+```
+Text: "The team worked ___"
+
+▁in    → "worked in the office"
+▁for   → "worked for the company"
+▁on    → "worked on the project"
+▁with  → "worked with the client"
+▁as    → "worked as a consultant"
+```
+
+Each function word changes the sentence's meaning completely. The model knows a preposition is likely but can't determine which one without understanding the full intended meaning.
+
+| Token | Avg Loss | Appearances | Why hard |
+|-------|----------|-------------|----------|
+| `▁in` | 3.24 | 16,290 | 10+ valid prepositions compete |
+| `▁for` | 3.32 | 9,069 | Purpose, duration, or recipient? |
+| `▁that` | 3.35 | 8,486 | Demonstrative, relative, or conjunction? |
+| `▁I` | 3.25 | 8,671 | First person — only in some text styles |
+| `▁A` | 3.77 | 7,777 | Sentence start or article? |
+
+**Solution:** More model capacity. This is fundamental ambiguity — only bigger models with deeper understanding of meaning can resolve it.
+**Expected gain:** -0.003 to -0.008 BPP
+
+#### E. Multi-Character Word Starts — 4% of hard bits
+
+Longer tokenizer pieces that are still ambiguous:
+
+```
+Text: "The study was ___"
+
+▁re → "recently"? "related"? "released"? "remarkable"? "repeated"?
+▁con → "conducted"? "considered"? "controversial"? "concerning"?
+▁pro → "published" (no) / "probably"? "promising"? "produced"?
+```
+
+Less ambiguous than single letters (fewer words start with "re" than "r") but still many options. Avg loss ~4.0-4.3 nats.
+
+**Solution:** Same as Category A — larger vocabulary merges these into full words.
+**Expected gain:** Included in Category A estimate
+
+---
+
+### Summary: Where Improvement Should Come From
+
+| Sub-Category | % of Hard Bits | Root Cause | Best Solution | Est. BPP Gain |
+|-------------|---------------|------------|---------------|---------------|
+| Word-initial letters | 66% | 1024 vocab forces letter-by-letter prediction | Larger vocabulary (4096) | -0.010 to -0.015 |
+| Function words | 20% | Genuine ambiguity — multiple valid choices | More model capacity | -0.003 to -0.008 |
+| Sentence starters | 6% | After period, any sentence can follow | TTT (adapt to document) | -0.003 to -0.010 |
+| Content after "the" | 4% | Need topic understanding for noun prediction | Longer context + capacity | -0.002 to -0.005 |
+| Multi-char word starts | 4% | Same as word-initial but less severe | Larger vocabulary | included above |
+
+**The single biggest insight: 66% of hard bits are a VOCABULARY problem, not a model problem.** A 4096-token vocabulary would eliminate most word-initial letter ambiguity by merging common words into single tokens.
+
 ---
 
 ## 2. What the Losses Look Like — Distribution

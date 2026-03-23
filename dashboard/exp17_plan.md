@@ -54,7 +54,7 @@ Quantization penalty (+0.009 BPP) is lower than estimated (+0.015-0.020). Muon W
 
 ## Addendum 2: Sliding Window Eval (on quantized model)
 
-**Status: Next — running on pod**
+**Status: Complete. val_loss = 1.9744, val_bpb ≈ 1.170**
 
 ### What
 Score the quantized model using overlapping 2048-token windows with stride=256. Only the last 256 tokens per window are scored, ensuring each scored token has ~1792 tokens of context.
@@ -65,12 +65,15 @@ Standard eval uses non-overlapping windows where early tokens have minimal conte
 - Pre-quant sliding (stride=256): val_loss = 1.9531 (delta = -0.044)
 - BPP improvement: ~-0.026
 
-### Expected result on quantized model
-- Quantized standard: val_loss = 2.0111 → val_bpb ≈ 1.191
-- Quantized sliding: val_loss ≈ 2.0111 - 0.044 = ~1.967 → val_bpb ≈ **1.165**
+### Result
 
-### Run on
-Pod with shared volume. Upload quantized model, run sliding eval, ~10 min.
+| Eval Method | val_loss | Approx BPP |
+|-------------|---------|------------|
+| Standard (non-overlapping 2048) | 2.0111 | ~1.191 |
+| **Sliding window (stride=256)** | **1.9744** | **~1.170** |
+| Delta | **-0.0367** | **~-0.022** |
+
+Sliding window delta on quantized model (-0.037 nats) is similar to pre-quant (-0.044 nats). Quantization didn't significantly affect the sliding window benefit.
 
 ---
 
@@ -107,17 +110,19 @@ Pod. ~10-20 min depending on TTT method.
 ## Execution Order
 
 1. ~~**Addendum 1 (int5+int6)**~~ ✅ Done. val_bpb ≈ 1.191, 15.0MB.
-2. **Addendum 2 (sliding window)** ← Next. Clean baseline for TTT comparison.
-3. **Addendum 3 (TTT)** — If sliding window gives ~1.165, decide if TTT is worth the effort.
+2. ~~**Addendum 2 (sliding window)**~~ ✅ Done. val_bpb ≈ 1.170.
+3. **Addendum 3 (TTT)** ← Next. Can it push below 1.17?
 
-## Expected Final Submission
+## Current Submission Numbers
 
-| Step | val_bpb | Status |
-|------|---------|--------|
-| Exp 17 pre-quant | 1.1826 | Done |
-| + Int5+Int6+Int8 quant | ~1.191 (+0.009) | ✅ Done |
-| + Sliding window (stride=256) | ~1.165 (-0.026) | Next |
-| + TTT (if it works) | ~1.13-1.16 (-0.001 to -0.033) | After sliding |
-| **Submission** | **1.13 to 1.17** | |
+| Step | val_loss | val_bpb (approx) | Status |
+|------|---------|-------------------|--------|
+| Exp 17 pre-quant | 1.9969 | 1.1826 | ✅ |
+| + Int5+Int6+Int8 quant | 2.0111 | ~1.191 (+0.009) | ✅ |
+| + Sliding window (stride=256) | 1.9744 | **~1.170 (-0.022)** | ✅ |
+| + TTT (if it works) | ? | ~1.14-1.17 | Next |
 
-Competition baseline: 1.2244. We beat it at every step.
+**Current best submission BPP: ~1.170**
+Competition baseline: 1.2244. We beat it by **0.054**.
+Competition #1 (official): 1.1748. We beat it by **0.005**.
+Competition #1 (pending): 1.1326. We're 0.037 behind.

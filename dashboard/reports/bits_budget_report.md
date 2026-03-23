@@ -127,6 +127,8 @@ s → ,          █████████████████████
 
 **Transitions after punctuation dominate.** `. → The` is the single most expensive bigram — after a period, which word starts the next sentence? The model knows a sentence is starting but can't predict WHICH word. This is the fundamental capacity limitation of a 27M-param model.
 
+**Why BigramHash doesn't help here:** Our architecture includes BigramHash (a 4096-bucket lookup table for token pairs) and SmearGate (blends previous token's embedding into current). Exp 16 ablation proved BigramHash contributes exactly zero — SmearGate already tells the model "a period just happened." The expensive bigrams are expensive because of *which word comes next*, not because the model lacks pair awareness. Knowing `. → The` is a common pair doesn't help predict whether "The" or "She" or "It" follows this specific period — that requires understanding the document's content, which no bigram table provides.
+
 ---
 
 ## 5. Confidence vs Correctness

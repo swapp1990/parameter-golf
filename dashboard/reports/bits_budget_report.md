@@ -35,13 +35,18 @@ The "unpredictable" floor uses 8% of bits on only 3.4% of tokens. These are our 
 
 The 67% breaks down into 5 sub-categories:
 
-| Sub-Cat | % of Hard Bits | Example | What's happening | Solution | Est. Gain |
-|---------|---------------|---------|-----------------|----------|-----------|
-| **Word-initial letters** | 66% | `the ▁s___` — is it "street", "small", "school"? | 1024 vocab splits words into letters. Model must guess which of ~200 s-words comes next. | Larger vocab (4096) | -0.01 to -0.015 |
-| **Function words** | 20% | `worked ▁___` — "in"? "for"? "on"? "with"? | Multiple prepositions are grammatically valid. Needs meaning understanding. | More capacity | -0.003 to -0.008 |
-| **Sentence starters** | 6% | `. ▁___` — "The"? "It"? "He"? "This"? | After a period, almost any word can start the next sentence. | TTT (adapt to doc) | -0.003 to -0.010 |
-| **Content after "the"** | 4% | `the ▁c___` — "city"? "car"? "country"? | Model knows a noun follows "the" but can't narrow which one. | Longer context | -0.002 to -0.005 |
-| **Multi-char starts** | 4% | `▁re___` — "recently"? "related"? "released"? | Like word-initial but less ambiguous. | Larger vocab | included above |
+| Sub-Category | % of Hard Bits | What's happening | Solution | Est. Gain |
+|---------|---------------|-----------------|----------|-----------|
+| **Word-initial letters** | 66% | 1024 vocab splits words into letters. Model guesses which of ~200 words start with that letter. | Larger vocab (4096) | -0.01 to -0.015 |
+| | | `She walked into the` **`▁s`**`___` → "store"? "street"? "school"? "small"? "sun"? (loss=3.65) | | |
+| **Function words** | 20% | Multiple prepositions are grammatically valid. Needs deep meaning understanding. | More capacity | -0.003 to -0.008 |
+| | | `The team worked` **`▁___`** → "in" the office? "for" the company? "on" the project? (loss=3.24) | | |
+| **Sentence starters** | 6% | After a period, almost any word can begin the next sentence. | TTT (adapt to doc) | -0.003 to -0.010 |
+| | | `The weather was nice.` **`▁___`** → "The" next day? "She" walked? "It" was? "However"? (loss=3.50) | | |
+| **Content after "the"** | 4% | Model knows a noun follows "the" but can't narrow down which noun without topic understanding. | Longer context | -0.002 to -0.005 |
+| | | `He drove to the` **`▁c`**`___` → "city"? "coast"? "corner"? "church"? "clinic"? (loss=3.27) | | |
+| **Multi-char starts** | 4% | Like word-initial but with 2-3 letter prefix. Less ambiguous, still many options. | Larger vocab | included above |
+| | | `The results were` **`▁re`**`___` → "released"? "remarkable"? "recently"? "reported"? (loss=4.33) | | |
 
 **The biggest insight: 66% of hard bits are a VOCABULARY problem.** The 1024-token vocabulary forces the model to predict words letter-by-letter. A 4096-token vocabulary would merge common words into single tokens, eliminating this ambiguity.
 

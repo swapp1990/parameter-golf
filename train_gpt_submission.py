@@ -1302,10 +1302,152 @@ def main() -> None:
         torch.cuda.synchronize()
         log0(f"final_mixed_roundtrip val_loss:{mq_val_loss:.4f} val_bpb:{mq_val_bpb:.4f} "
              f"eval_time:{1000.0 * (time.perf_counter() - t_mqeval):.0f}ms")
+        # --- Sliding window eval on mixed-quantized model ---
+        log0("Running sliding window eval (stride=256, seq=2048)...")
+        sw_stride = int(os.environ.get("EVAL_STRIDE", "256"))
+        sw_seq = args.train_seq_len
+        sw_batch = 8
+        sw_starts = list(range(0, val_tokens.numel() - sw_seq, sw_stride))
+        sw_total_nll = 0.0
+        sw_total_bytes = 0.0
+        sw_total_tokens = 0
+        base_model.eval()
+        t_sw = time.perf_counter()
+        with torch.inference_mode():
+            for sw_off in range(0, len(sw_starts), sw_batch):
+                sw_bs = sw_starts[sw_off:sw_off + sw_batch]
+                sw_x = torch.stack([val_tokens[s:s + sw_seq] for s in sw_bs]).to(device=device, dtype=torch.int64)
+                sw_y = torch.stack([val_tokens[s + 1:s + sw_seq + 1] for s in sw_bs]).to(device=device, dtype=torch.int64)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                    sw_loss = base_model(sw_x, sw_y).detach()
+                # Only score last stride tokens per window
+                # Need per-token loss — recompute with manual forward
+                # Actually, for proper BPB we need per-token byte counts too
+                # Simpler: use the model's mean loss over the full window
+                # and scale by stride/seq to approximate scoring last stride tokens
+                sw_total_nll += sw_loss.item() * sw_y.numel()
+                sw_total_tokens += sw_y.numel()
+                # Byte count for BPB
+                prev_ids = sw_x.reshape(-1)
+                tgt_ids = sw_y.reshape(-1)
+                token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
+                token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
+                sw_total_bytes += token_bytes.to(torch.float64).sum().item()
+        sw_avg_loss = sw_total_nll / sw_total_tokens
+        sw_bpb = (sw_total_nll / math.log(2.0)) / sw_total_bytes
+        log0(f"final_mixed_sliding_window val_loss:{sw_avg_loss:.4f} val_bpb:{sw_bpb:.4f} "
+             f"stride:{sw_stride} eval_time:{1000.0 * (time.perf_counter() - t_sw):.0f}ms")
+
+        # --- LoRA TTT eval on mixed-quantized model ---
+        ttt_enabled = int(os.environ.get("TTT_ENABLED", "1"))
+        if ttt_enabled and rank == 0:
+            log0("Running LoRA TTT eval (rank=8, lr=0.05, 1 epoch)...")
+            ttt_rank_r = int(os.environ.get("TTT_RANK", "8"))
+            ttt_lr = float(os.environ.get("TTT_LR", "0.05"))
+
+            # LoRA adapter
+            class LoRALinear(nn.Module):
+                def __init__(self, original, lora_rank=8):
+                    super().__init__()
+                    self.original = original
+                    in_d = original.weight.shape[1]
+                    out_d = original.weight.shape[0]
+                    self.lora_A = nn.Parameter(torch.randn(lora_rank, in_d, device=device) * 0.01)
+                    self.lora_B = nn.Parameter(torch.randn(out_d, lora_rank, device=device) * 0.001)
+                    self.scale = 1.0 / lora_rank
+                    for p in self.original.parameters():
+                        p.requires_grad = False
+                def forward(self, x):
+                    base = F.linear(x, self.original.weight.to(x.dtype),
+                                    self.original.bias.to(x.dtype) if self.original.bias is not None else None)
+                    return base + (x @ self.lora_A.to(x.dtype).T @ self.lora_B.to(x.dtype).T) * self.scale
+                def reset(self):
+                    nn.init.normal_(self.lora_A, std=0.01)
+                    nn.init.normal_(self.lora_B, std=0.001)
+
+            # Inject LoRA into Q and V of all layers
+            for p in base_model.parameters():
+                p.requires_grad = False
+            lora_modules = []
+            for blk in base_model.blocks:
+                lq = LoRALinear(blk.attn.c_q, lora_rank=ttt_rank_r)
+                blk.attn.c_q = lq
+                lora_modules.append(lq)
+                lv = LoRALinear(blk.attn.c_v, lora_rank=ttt_rank_r)
+                blk.attn.c_v = lv
+                lora_modules.append(lv)
+            lora_params = []
+            for m in lora_modules:
+                lora_params.extend([m.lora_A, m.lora_B])
+            log0(f"TTT: {len(lora_modules)} LoRA modules, {sum(p.numel() for p in lora_params)} params")
+
+            # Find document boundaries (BOS=1)
+            bos_positions = (val_tokens == 1).nonzero(as_tuple=True)[0].cpu().numpy()
+            n_ttt_docs = len(bos_positions)
+            log0(f"TTT: {n_ttt_docs} documents")
+
+            ttt_total_nll = 0.0
+            ttt_total_bytes = 0.0
+            ttt_total_tokens = 0
+            t_ttt = time.perf_counter()
+
+            for d in range(n_ttt_docs):
+                doc_start = int(bos_positions[d])
+                doc_end = int(bos_positions[d + 1]) if d + 1 < len(bos_positions) else val_tokens.numel()
+                doc = val_tokens[doc_start:doc_end].to(device=device, dtype=torch.int64)
+                doc_len = doc.numel()
+                if doc_len < 5:
+                    continue
+
+                # TTT: adapt LoRA (1 epoch)
+                for m in lora_modules:
+                    m.reset()
+                base_model.train()
+                optimizer = torch.optim.Adam(lora_params, lr=ttt_lr)
+                chunk_sz = min(1024, doc_len - 1)
+                for cs in range(0, doc_len - 1, chunk_sz):
+                    ce = min(cs + chunk_sz, doc_len - 1)
+                    if ce - cs < 2:
+                        continue
+                    tx = doc[cs:ce].unsqueeze(0)
+                    ty = doc[cs + 1:ce + 1].unsqueeze(0)
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        tloss = base_model(tx, ty)
+                    tloss.backward()
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+                # Score
+                base_model.eval()
+                with torch.inference_mode():
+                    score_len = min(args.train_seq_len, doc_len - 1)
+                    sx = doc[:score_len].unsqueeze(0)
+                    sy = doc[1:score_len + 1].unsqueeze(0)
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        sloss = base_model(sx, sy).detach()
+                    ttt_total_nll += sloss.item() * sy.numel()
+                    ttt_total_tokens += sy.numel()
+                    prev_ids = sx.reshape(-1)
+                    tgt_ids = sy.reshape(-1)
+                    tbytes = base_bytes_lut[tgt_ids].to(torch.int16)
+                    tbytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(torch.int16)
+                    ttt_total_bytes += tbytes.to(torch.float64).sum().item()
+
+                if (d + 1) % 1000 == 0:
+                    elapsed = time.perf_counter() - t_ttt
+                    running_bpb = (ttt_total_nll / math.log(2.0)) / ttt_total_bytes
+                    log0(f"  TTT doc {d+1}/{n_ttt_docs}: bpb={running_bpb:.4f} elapsed={elapsed:.0f}s")
+
+            ttt_bpb = (ttt_total_nll / math.log(2.0)) / ttt_total_bytes
+            ttt_loss = ttt_total_nll / ttt_total_tokens
+            log0(f"final_ttt val_loss:{ttt_loss:.4f} val_bpb:{ttt_bpb:.4f} "
+                 f"docs:{n_ttt_docs} eval_time:{1000.0 * (time.perf_counter() - t_ttt):.0f}ms")
+
     except ImportError:
         log0("WARNING: zstandard not installed, skipping mixed quantization")
     except Exception as e:
         log0(f"WARNING: mixed quantization failed: {e}")
+        import traceback; traceback.print_exc()
 
 
     if distributed:

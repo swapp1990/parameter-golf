@@ -98,12 +98,16 @@ Document analysis found:
 ### Concern
 Competition data: TTT + SmearGate = only -0.001 BPP (vs -0.033 without SmearGate). Our model has SmearGate, so gain may be minimal.
 
-### Expected result
-- Optimistic: -0.010 to -0.033 BPP
-- Realistic with SmearGate: -0.001 to -0.010 BPP
+### Result (proper BPB, 500 docs, quantized model)
 
-### Run on
-Pod. ~10-20 min depending on TTT method.
+| Config | val_loss | val_bpb | Delta |
+|--------|---------|---------|-------|
+| No TTT | 1.9913 | 1.1930 | — |
+| **TTT (LR=0.05, rank-8, 1 epoch)** | 1.9724 | **1.1817** | **-0.0113** |
+
+TTT works despite SmearGate. The -0.011 BPP gain is real (not -0.001 as competition data suggested). LoRA initialization was the key fix — B must not be zero.
+
+Submission-feasible: 1 epoch fits within 10-min eval budget on 8xH100 (~8 min estimated).
 
 ---
 
@@ -111,18 +115,19 @@ Pod. ~10-20 min depending on TTT method.
 
 1. ~~**Addendum 1 (int5+int6)**~~ ✅ Done. val_bpb ≈ 1.191, 15.0MB.
 2. ~~**Addendum 2 (sliding window)**~~ ✅ Done. val_bpb ≈ 1.170.
-3. **Addendum 3 (TTT)** ← Next. Can it push below 1.17?
+3. ~~**Addendum 3 (TTT)**~~ ✅ Done. val_bpb ≈ 1.159 (estimated combined).
 
-## Current Submission Numbers
+## Final Submission Numbers
 
-| Step | val_loss | val_bpb (approx) | Status |
-|------|---------|-------------------|--------|
-| Exp 17 pre-quant | 1.9969 | 1.1826 | ✅ |
-| + Int5+Int6+Int8 quant | 2.0111 | ~1.191 (+0.009) | ✅ |
-| + Sliding window (stride=256) | 1.9744 | **~1.170 (-0.022)** | ✅ |
-| + TTT (if it works) | ? | ~1.14-1.17 | Next |
+| Step | val_bpb | Delta | Status |
+|------|---------|-------|--------|
+| Exp 17 pre-quant | 1.1826 | — | ✅ |
+| + Int5+Int6+Int8 quant | 1.1930 | +0.010 | ✅ |
+| + Sliding window (stride=256) | ~1.170 | -0.022 | ✅ |
+| + TTT (LoRA, LR=0.05, 1 epoch) | ~1.159 | -0.011 | ✅ |
+| **Estimated submission** | **~1.159** | | |
 
-**Current best submission BPP: ~1.170**
-Competition baseline: 1.2244. We beat it by **0.054**.
-Competition #1 (official): 1.1748. We beat it by **0.005**.
-Competition #1 (pending): 1.1326. We're 0.037 behind.
+**Estimated submission BPP: ~1.159**
+Competition baseline: 1.2244. **We beat it by 0.065.**
+Competition #1 (official): 1.1748. **We beat it by 0.016.**
+Competition #1 (pending): 1.1326. We're 0.027 behind.

@@ -9,3 +9,23 @@ data/docs_selected.jsonl
 .mypy_cache/
 .venv
 logs/
+
+# Checkpoints and model files
+*.pt
+*.ptz
+dashboard/checkpoints/
+
+# Logs
+*.log
+
+# Frontend build artifacts
+dashboard/frontend/.vite/
+dashboard/frontend/dist/
+dashboard/frontend/node_modules/
+
+# Analysis temp files (keep reports/ folder, ignore loose files)
+dashboard/analysis_*.json
+dashboard/analysis_*.md
+dashboard/doc_isolated_eval_results.json
+dashboard/document_analysis_results.json
+dashboard/bits_budget_results.json

@@ -278,3 +278,111 @@ LoRA TTT (-0.034) beats sliding window (-0.022) because it directly addresses th
 2. **LR + momentum schedule from #198**: Their specific LR=0.025, momentum 0.99 with 1500-step warmup from 0.92 differs from ours.
 3. **Vocabulary increase**: Our bits budget shows 32.5% of hard tokens are word-initial letters — a vocabulary problem. A 2048-vocab tokenizer would reduce this, but increases embedding table size.
 4. **QAT (late)**: Quantization-aware training in the last 4% of steps. Reduces quant penalty from +0.009 to ~+0.003.
+
+---
+
+## Appendix: Full Data Tables
+
+### Top 15 Most Expensive Bigrams
+
+Ranked by total cost (frequency × average loss). These are where the model spends the most bits.
+
+| Prev | Cur | Total Cost | Count | Avg Loss |
+|------|-----|-----------|-------|----------|
+| . | The | 4,061 | 2,017 | 2.01 |
+| , | and | 3,314 | 1,763 | 1.88 |
+| . | A | 2,710 | 885 | 3.06 |
+| of | the | 2,653 | 2,484 | 1.07 |
+| _ | 1 | 2,584 | 2,597 | 0.99 |
+| in | the | 2,354 | 1,754 | 1.34 |
+| . | S | 2,324 | 861 | 2.70 |
+| _ | 2 | 2,234 | 2,582 | 0.87 |
+| , | the | 2,212 | 989 | 2.24 |
+| the | c | 2,152 | 696 | 3.09 |
+| . | I | 2,143 | 926 | 2.31 |
+| . | B | 2,066 | 650 | 3.18 |
+| s | , | 1,944 | 1,227 | 1.58 |
+| the | s | 1,926 | 726 | 2.65 |
+| the | f | 1,926 | 633 | 3.04 |
+
+Sentence starters (`. → The/A/S/I/B`) and article completions (`the → c/s/f`) dominate. These are the word-initial prediction problem.
+
+### Top 10 Most Expensive Individual Tokens
+
+| Token | Total Cost | Count | Avg Loss |
+|-------|-----------|-------|----------|
+| , | 36,943 | 22,218 | 1.66 |
+| the | 33,845 | 19,276 | 1.76 |
+| . | 30,965 | 21,768 | 1.42 |
+| and | 28,149 | 11,066 | 2.54 |
+| _ (space) | 25,794 | 12,829 | 2.01 |
+| a | 25,446 | 9,815 | 2.59 |
+| in | 22,592 | 8,173 | 2.76 |
+| c (word-initial) | 21,794 | 6,200 | 3.52 |
+| s (word-initial) | 21,572 | 6,836 | 3.16 |
+| p (word-initial) | 20,731 | 6,338 | 3.27 |
+
+Punctuation and function words (`,` `.` `the` `and`) cost the most by total because of extreme frequency. Word-initial letters (`c` `s` `p`) cost the most per-token (3.16-3.52 avg).
+
+### Head Ablation (Top 15 by Impact)
+
+| Head | Impact | Interpretation |
+|------|--------|----------------|
+| **L0H6** | **+0.775** | Primary first-layer head |
+| **L0H0** | **+0.583** | Second critical first-layer head |
+| L1H7 | +0.118 | Important second-layer head |
+| L7H7 | +0.082 | XSA layer head |
+| L6H6 | +0.078 | |
+| L5H4 | +0.069 | |
+| L3H6 | +0.066 | |
+| L4H3 | +0.057 | |
+| L2H4 | +0.054 | |
+| L3H1 | +0.049 | |
+| L5H3 | +0.049 | |
+| L6H7 | +0.049 | |
+| L7H6 | +0.047 | |
+| L5H1 | +0.047 | |
+| L2H3 | +0.046 | |
+
+Two heads in L0 dominate (0.78 and 0.58) — they handle the critical initial processing of SmearGate-enriched embeddings. All remaining heads contribute 0.05-0.12, with no dead heads.
+
+### Full Position Loss Curve
+
+| Range | Avg Loss |
+|-------|----------|
+| 0-128 | 2.471 |
+| 128-256 | 2.121 |
+| 256-384 | 2.072 |
+| 384-512 | 2.060 |
+| 512-640 | 2.022 |
+| 640-768 | 2.020 |
+| 768-896 | 2.013 |
+| 896-1024 | 2.020 |
+| 1024-1152 | 2.008 |
+| 1152-1280 | 2.011 |
+| 1280-1408 | 2.033 |
+| 1408-1536 | 2.007 |
+| 1536-1664 | 2.016 |
+| 1664-1792 | 2.036 |
+| 1792-1920 | 2.034 |
+| 1920-2048 | 2.024 |
+
+Loss drops sharply from 2.47 (positions 0-128) to 2.02 (positions 512+), then stays flat. The model fully utilizes context up to ~512 tokens; beyond that, additional context provides minimal benefit.
+
+### MLP Ablation (per layer)
+
+| Layer | MLP Impact | Full Layer Impact | MLP as % of Layer |
+|-------|-----------|------------------|-------------------|
+| L0 | +5.60 | +5.35 | 105% (MLP > full layer — attn is slightly negative alone) |
+| L1 | +1.00 | +0.92 | 108% |
+| L2 | +0.62 | +0.52 | 119% |
+| L3 | +0.46 | +0.41 | 112% |
+| L4 | +0.25 | +0.24 | 104% |
+| L5 | +0.19 | +0.24 | 79% |
+| L6 | +0.18 | +0.29 | 62% |
+| L7 | +0.19 | +0.24 | 79% |
+| L8 | +0.18 | +0.19 | 95% |
+| L9 | +0.18 | +0.19 | 95% |
+| L10 | +3.13 | +3.15 | 99% |
+
+Early layers (L0-L4) are MLP-dominated — attention contributes less than MLP. Middle layers (L5-L7) have more balanced attention/MLP contribution. L10 is almost entirely MLP (99%).

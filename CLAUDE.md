@@ -24,26 +24,24 @@ ssh ... "/root/run_experiment.sh exp9 REGISTER_MODE=2 WARMDOWN_ITERS=3000 TRAIN_
 - Check progress with quick foreground SSH commands when asked
 - Always set `TRAIN_BATCH_TOKENS=65536` for single GPU (default 524288 is for 8xH100)
 
-## Step-by-Step Execution (CRITICAL — READ THIS EVERY TIME)
+## Running Scripts on the Pod (CRITICAL — READ EVERY TIME)
 
-- NEVER chain multiple commands in one SSH call. Run ONE command at a time.
-- NEVER run blocking SSH commands that take >15 seconds. Instead:
-  1. Run the command on the pod with `nohup ... > /runpod-volume/somefile.log 2>&1 &`
-  2. Poll the log file every 15-30 seconds with `tail -5 /runpod-volume/somefile.log`
-  3. Show the user the output each time
-- Before each step, state what you're doing and roughly how long it should take.
-- After each step completes, show the result before moving to the next.
-- If something fails, fix it immediately — don't retry blindly.
-- Examples of commands that MUST be backgrounded + polled:
-  - `pip install` (can take 30-120s)
-  - `git clone` (can take 10-60s)
-  - `python data/cached_challenge_fineweb.py` (downloads data, 30-120s)
-  - `python train_gpt.py` (training, minutes to hours)
-  - Any python script that does heavy computation
-- Examples of commands that can run directly (fast, <10s):
-  - `echo`, `ls`, `cat`, `tail`, `head`, `wc`, `ps`, `nvidia-smi`
-  - `git checkout`, `python -c 'import ast; ...'` (syntax checks)
-  - `kill`, `mv`, `cp`, `mkdir`
+1. **Write and test code LOCALLY first.** Verify it works before touching the pod.
+2. **Upload ONE script** to the pod.
+3. **Launch in background:** `nohup ... > /runpod-volume/eval.log 2>&1 &`
+4. **Give the user a PowerShell-compatible tail command** to monitor themselves:
+   ```
+   ssh -i C:\Users\swapp\.ssh\id_ed25519 root@<IP> -p <PORT> "tail -f /runpod-volume/eval.log"
+   ```
+5. **Hands off.** Do NOT poll, sleep, or check the log yourself. Wait for the user to tell you the result or ask you to check.
+6. **Never run multiple things simultaneously.** One script, one launch.
+7. **When user says done:** download results, stop pod.
+
+### Quick commands (OK to run directly, <10s):
+`echo`, `ls`, `cat`, `tail`, `head`, `wc`, `ps`, `nvidia-smi`, `kill`, `mv`, `cp`, `mkdir`, `git checkout`, syntax checks
+
+### Everything else MUST be backgrounded:
+`pip install`, `git clone`, `python *.py`, any computation
 
 ## Checkpoint Management (CRITICAL)
 
@@ -51,6 +49,40 @@ ssh ... "/root/run_experiment.sh exp9 REGISTER_MODE=2 WARMDOWN_ITERS=3000 TRAIN_
 - Save to: `D:/MyProjects/Claude/parameter-golf/dashboard/checkpoints/<exp_name>/`
 - Also download the training log.
 - Never stop a pod without first downloading the checkpoint — it may be on a non-shared volume and lost forever.
+
+## File Organization (FOLLOW THIS)
+
+Never put scripts or files in the root directory or dashboard root. Use the organized structure:
+
+```
+Root (only these .py files):
+  train_gpt.py              — original baseline
+  train_gpt_submission.py   — submission-ready version
+  train_gpt_mlx.py          — MLX variant
+
+scripts/
+  patches/      — code patches (patch_exp10.py, exp14_patch.py, build_submission.py, etc.)
+  eval/         — evaluation scripts (ttt_eval.py, sliding window, debug, local tests)
+  analysis/     — analysis tools (checkpoint_analysis.py, generate_report.py, dashboards)
+  experiments/  — experiment-specific scripts (exp11, exp16 batches, quantize)
+
+dashboard/
+  plans/                — experiment plans (experiments_plan.md, exp17_plan.md)
+  experiment_analyses/  — per-experiment analysis docs (exp10, exp11, exp12-14, exp15, exp16)
+  reports/
+    README.md           — standard report format
+    exp17/              — comprehensive report for exp17 (analysis.md, data, tables)
+    exp<N>/             — future experiments follow same structure
+  frontend/             — React dashboard (compiled)
+```
+
+**Rules:**
+- New scripts go in `scripts/<category>/`
+- New experiment analyses go in `dashboard/experiment_analyses/`
+- Comprehensive reports go in `dashboard/reports/exp<N>/`
+- Plans go in `dashboard/plans/`
+- NEVER put loose .py or .md files in root or dashboard root
+- Use `git rm` for specific files, NEVER `git add -A` on large directories
 
 ## RunPod Pod Management
 

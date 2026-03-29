@@ -54,7 +54,67 @@ ssh ... "/root/run_experiment.sh exp9 REGISTER_MODE=2 WARMDOWN_ITERS=3000 TRAIN_
 
 ## RunPod Pod Management
 
+`runpodctl` is installed at `C:\Users\swapp\AppData\Local\Microsoft\WindowsApps\runpodctl.exe`. API key is pre-configured.
+
+### Creating a Pod
+
+```bash
+# List existing pods
+runpodctl pod list
+
+# List network volumes
+runpodctl network-volume list
+
+# Create 1xH100 SXM pod with network volume (US-MO-1)
+runpodctl pod create \
+  --name "pod-name" \
+  --gpu-id "NVIDIA H100 80GB HBM3" \
+  --gpu-count 1 \
+  --image "runpod/parameter-golf:latest" \
+  --network-volume-id "y26gyuaocv" \
+  --volume-mount-path "/runpod-volume" \
+  --container-disk-in-gb 20 \
+  --data-center-ids "US-MO-1" \
+  --ports "22/tcp"
+```
+
+### Connecting via SSH
+
+```bash
+# Get SSH connection info (wait until pod is ready)
+runpodctl ssh info <pod-id>
+
+# Connect (uses ssh.runpod.io proxy)
+ssh root@<pod-id>-ssh.proxy.runpod.io
+```
+
+### Managing Pods
+
+```bash
+runpodctl pod stop <pod-id>    # stop (keeps data)
+runpodctl pod start <pod-id>   # restart stopped pod
+runpodctl pod remove <pod-id>  # terminate permanently
+```
+
+### Key Resources
+
+- Network volume: `param-golf-shared` (id: `y26gyuaocv`, 50GB, US-MO-1)
+- Volume mount: `/runpod-volume/`
+- Docker image: `runpod/parameter-golf:latest`
+- GPU IDs: `NVIDIA H100 80GB HBM3` (SXM), `NVIDIA H100 PCIe`
 - When switching GPUs, use shared/network volumes so data persists across pods.
 - Always terminate old pods before creating new ones.
 - Never guess Docker image tags — use known working images or look them up first.
 - When creating pods, verify the image exists before deploying.
+
+## Submitting PRs to Upstream (openai/parameter-golf)
+
+- Upstream remote: `upstream` → `https://github.com/openai/parameter-golf.git`
+- Fork: `origin` → `https://github.com/swapp1990/parameter-golf.git`
+- PRs must be clean: only files under `records/` — no dashboard, scripts, CLAUDE.md, patches, etc.
+- To submit cleanly:
+  1. `git fetch upstream main`
+  2. Create a branch off `upstream/main`
+  3. Cherry-pick or copy only the `records/track_*/<submission>/` files
+  4. Push branch to `origin`, then `gh pr create --repo openai/parameter-golf --head swapp1990:<branch> --base main`
+- Never submit from a branch based on fork's `main` — it carries all local experiment commits.

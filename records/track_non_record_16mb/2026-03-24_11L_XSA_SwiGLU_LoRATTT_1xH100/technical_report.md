@@ -277,7 +277,9 @@ if step >= warmdown_start and step % 200 == 0 and step > 100:
 
 All quantization is per-row with float16 scale factors.
 
-**Why int5 for MLP, int6 for attention**: MLP weights tolerate lower precision (less sensitive to fine-grained values). Attention weights carry positional and contextual information requiring higher fidelity. Embeddings need int8 to preserve vocabulary diversity across 1024 tokens.
+**Why int5 for MLP, int6 for attention**: Embeddings get int8 (highest precision) because the embedding matrix is the model's entire vocabulary — 1024 tokens each needing a distinct 512-dim vector. Since the matrix is also tied to the output projection, quantization errors here directly corrupt every prediction. Attention weights get int6 because Q/K/V projections encode positional and contextual relationships ("attend to the verb 3 positions back"), where small errors can shift attention to the wrong token. MLP weights tolerate the lowest precision (int5) because SwiGLU's gating acts as a filter — small weight errors just slightly adjust feature activation rather than producing completely wrong outputs — and with three matrices per MLP (gate, up, proj), errors in one can be partially compensated by the others. MLPs are also the largest component, so dropping from int6 to int5 here saves the most space.
+
+**Why not uniform precision**: Int8 everywhere gives 24.7 MB — over the 16 MB budget. Int5 everywhere fits but collapses quality on the sensitive embedding and attention components. Mixed quantization allocates bits where sensitivity is highest, achieving 15.02 MB with only +0.020 BPB penalty — which is then more than recovered by LoRA TTT (-0.034).
 
 **Quantization penalty**:
 

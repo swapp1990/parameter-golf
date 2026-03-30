@@ -20,6 +20,7 @@ This submission represents 18 experiments over 5 days, improving from val_bpb=3.
    - [3.7 Stochastic Weight Averaging](#37-stochastic-weight-averaging)
    - [3.8 Mixed Quantization](#38-mixed-quantization-int5int6int8--zstd)
    - [3.9 Score-First LoRA TTT](#39-score-first-lora-ttt)
+   - [3.10 Tied Token Embeddings](#310-tied-token-embeddings)
 4. [Training Progression](#4-training-progression)
 5. [What Each Technique Contributed](#5-what-each-technique-contributed)
 6. [What Didn't Work](#6-what-didnt-work)
@@ -343,6 +344,16 @@ For each document:
 **Why SGD TTT fails (+0.018)**: Directly modifying dequantized weights breaks quantization structure. Weights drift out of optimal quantization ranges. LoRA's key advantage: it perturbs in a low-rank subspace while preserving the quantized base weights intact.
 
 **Verdict**: Largest single technique improvement (-0.034). Directly addresses the document cold-start problem that accounts for 36.8% of uncertain-wrong tokens.
+
+---
+
+### 3.10 Tied Token Embeddings
+
+**What**: The same 1024 × 512 embedding matrix `E` serves dual duty — as the input lookup (token ID → vector) and as the output projection (hidden state → vocabulary scores via `h × E^T`). This halves the embedding parameter cost from ~1M to ~524K parameters.
+
+**Why it works**: Training pushes gradients into `E` from both sides simultaneously. From the input side, `E` learns to represent tokens meaningfully. From the output side, `E` learns to be a good scoring matrix — the model is trained to produce hidden states `h` that have a high dot product with the correct next token's embedding. This dual pressure forces `E` into a vector space where proximity genuinely reflects token similarity.
+
+**Tradeoff**: The input and output roles want subtly different things. As inputs, similar tokens (e.g., "cat" and "cats") should be nearby. As outputs, the model needs to distinguish between them clearly — which is easier when their vectors point in different directions. This tension is a real disadvantage, and large-scale models (50K+ vocabulary, billions of parameters) sometimes untie for this reason. At our scale — 1024-token vocabulary and a 16 MB size budget — the 524K parameter saving far outweighs the quality cost of the compromise, which is why all competitive entries in this track use tying.
 
 ---
 

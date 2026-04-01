@@ -1,0 +1,68 @@
+Parameter Golf Experiment Runner
+Base dir: /root/parameter-golf
+Experiments: [22, 24, 25]
+Device: NVIDIA GeForce RTX 4090
+
+
+================================================================================
+EXP 22: LeakyReLU^2 Activation (replacing SwiGLU)
+================================================================================
+  Train data found: 1 shard(s)
+  Training with LeakyReLU^2 MLP for 300.0s, batch_tokens=16384
+  step:1 val_loss:6.6788 val_bpb:3.9555 train_loss:6.9342 time:127234ms
+  step:100 val_loss:4.5480 val_bpb:2.6936 train_loss:4.6530 time:265899ms
+  step:200 val_loss:4.1595 val_bpb:2.4635 train_loss:4.2313 time:404677ms
+  FINAL step:200 val_loss:4.1595 val_bpb:2.4635
+
+  RESULT: LeakyReLU^2 final val_loss=4.1595 at step 200
+  Baseline SwiGLU val_loss=2.2538 at step 1000
+
+================================================================================
+EXP 24: EMA (decay=0.997) During Training
+================================================================================
+  Train data found: 1 shard(s)
+  Training with EMA(decay=0.997) for 300.0s, batch_tokens=16384
+  step:1 val_loss:6.6829 val_bpb:3.9580 train_loss:6.9345 time:110704ms
+  step:100 val_loss:4.6671 val_bpb:2.7641 train_loss:4.7927 time:235185ms
+  step:200 val_loss:4.1002 val_bpb:2.4284 train_loss:4.1573 time:359681ms
+
+  Online weights: val_loss=4.1002, val_bpb=2.4284
+  EMA weights:    val_loss=5.8520, val_bpb=3.4659
+  SWA: not enough checkpoints collected (1)
+
+  RESULT: Best val_loss=4.1002 at step 200
+  Baseline SwiGLU val_loss=2.2538 at step 1000
+
+================================================================================
+EXP 25: XSA on All Layers (11/11 instead of 4/11)
+================================================================================
+  Train data found: 1 shard(s)
+  XSA enabled on all 11 layers
+  Training XSA-all for 300.0s, batch_tokens=16384
+  step:1 val_loss:6.7035 val_bpb:3.9702 train_loss:6.9352 time:115586ms
+  step:100 val_loss:4.5013 val_bpb:2.6659 train_loss:4.6103 time:241764ms
+  step:200 val_loss:4.0256 val_bpb:2.3842 train_loss:4.0900 time:368095ms
+  FINAL step:200 val_loss:4.0256 val_bpb:2.3842
+
+  --- Training baseline (XSA last-4 only) for same duration ---
+  Baseline (XSA last-4): val_loss=2.6194, val_bpb=1.5514 at step 2878
+
+  RESULT: XSA-all val_loss=4.0256 vs baseline val_loss=2.6194 (delta=+1.4061)
+
+================================================================================
+EXPERIMENT SUMMARY
+================================================================================
+  Exp | Name                                | Key Metric           | Baseline     | Delta      | Worth Full Run?
+--------------------------------------------------------------------------------------------------------------
+   22 | LeakyReLU^2 (vs SwiGLU)             | loss=4.1595          | loss=2.2538  | 1.9057     | NO
+   24 | EMA (decay=0.997)                   | loss=4.1002          | loss=2.2538  | 1.7518 (EMA-online) | NO
+   25 | XSA all layers                      | loss=4.0256          | loss=2.6194  | 1.4061     | NO
+--------------------------------------------------------------------------------------------------------------
+
+Notes:
+  - Exp 21: Compares requantized BPB (no TTT). Lower is better.
+  - Exp 22: Compares val_loss at comparable step count. Different step counts noted.
+  - Exp 23: Compares BPB on 2K docs (vs baseline 50K docs). Extrapolation needed.
+  - Exp 24: EMA vs online weights at same training budget. Negative delta = EMA wins.
+  - Exp 25: XSA-all vs XSA-last-4, same training config. Negative delta = XSA-all wins.
+  - 'Worth Full Run?' is YES (clear win), MAYBE (marginal/needs more data), NO (no benefit).

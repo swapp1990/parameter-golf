@@ -32,6 +32,15 @@ Train the best LM in 16MB. Scored on val_bpb (lower = better). Baseline: **1.224
 | 13 | SwiGLU replaces ReLU² | 1xH100 SXM | ~1,550 | — | SwiGLU > ReLU² (+0.004), activates L8 |
 | 14 | 11L SwiGLU SWA | 1xH100 SXM | 11,248 | 1.278 | No dead layers, +0.005 vs Exp 10 |
 | **14-8x** | **Same, competition HW** | **8xH100 SXM** | **8,583** | **1.202** | **Beats baseline by 0.023** |
+| 15 | + seq_len=2048 | 1xH100 SXM | ~7,900 | 1.187 | +0.015 from long context |
+| 16 | Ablation sweeps (LN scale, hetero MLP, XSA short) | 1xH100 SXM | ~1,500 | — | Most showed no gain |
+| 17 | + XSA (last 4 layers) | 1xH100 PCIe | 7,926 | **1.183** | +0.005 consistent, submission model |
+| 17+quant | Mixed int5/int6/int8+zstd | — | — | 1.191 | 15.02 MB, +0.020 quant penalty |
+| 17+TTT | + LoRA TTT (score-first) | — | — | **1.157** | -0.034 from test-time adapt |
+| 18 | Partial RoPE + EMA | 1xH100 PCIe | ~7,900 | 1.198 | Both worse: +0.015 each |
+| **19** | **Retokenize to 2048 vocab** | **1xH100 SXM** | **3,200** | **1.377** | **FAILED: ambiguity shifts, doesn't shrink. [Details](exp19_retokenization.md)** |
+| 20a | N-gram training embedding (7-gram) | 1xH100 SXM | 1,363 | 1.526 | FAILED: +0.19 worse than baseline |
+| **20b** | **N-gram eval-time cache (orders 2-7)** | **local/pod** | **—** | **-0.045** | **Works: eval-time cache, stacks with TTT. [Details](exp20_ngram_plan.md)** |
 
 ## Confirmed Lessons
 

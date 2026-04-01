@@ -70,6 +70,11 @@ class Hyperparameters:
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
 
+    # N-gram hash embedding.
+    ngram_n = int(os.environ.get("NGRAM_N", 0))  # 0 = disabled, 5-7 recommended
+    ngram_buckets = int(os.environ.get("NGRAM_BUCKETS", 8192))
+    ngram_dim = int(os.environ.get("NGRAM_DIM", 64))
+
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
     head_lr = float(os.environ.get("HEAD_LR", 0.008))
@@ -728,6 +733,29 @@ class SmearGate(nn.Module):
         x_prev = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1]], dim=1)
         return (1 - g) * x + g * x_prev
 
+class NgramHashEmbedding(nn.Module):
+    """Hash n-gram context into a learned embedding, projected to model dim."""
+    def __init__(self, n: int, num_buckets: int, embed_dim: int, model_dim: int):
+        super().__init__()
+        self.n = n
+        self.num_buckets = num_buckets
+        self.embed = nn.Embedding(num_buckets, embed_dim)
+        self.proj = CastedLinear(embed_dim, model_dim, bias=False)
+        self.proj._zero_init = True  # start as no-op
+        # Fixed primes for hashing each position in the n-gram
+        self.register_buffer("primes", torch.tensor([2, 3, 5, 7, 11, 13, 17, 19, 23][:n], dtype=torch.long))
+
+    def forward(self, token_ids: Tensor) -> Tensor:
+        # token_ids: [B, T]
+        h = torch.zeros_like(token_ids, dtype=torch.long)
+        for i in range(self.n):
+            # Shift token_ids right by i positions (causal: only past context)
+            shifted = torch.roll(token_ids.long(), shifts=i, dims=1)
+            shifted[:, :i] = 0  # zero out non-causal positions
+            h = (h + shifted * self.primes[i]) % self.num_buckets
+        return self.proj(self.embed(h))
+
+
 class Block(nn.Module):
     def __init__(
         self,
@@ -771,6 +799,9 @@ class GPT(nn.Module):
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
+        ngram_n: int = 0,
+        ngram_buckets: int = 8192,
+        ngram_dim: int = 64,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -779,6 +810,7 @@ class GPT(nn.Module):
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
+        self.ngram = NgramHashEmbedding(ngram_n, ngram_buckets, ngram_dim, model_dim) if ngram_n > 0 else None
         self.smear = SmearGate(model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
@@ -821,6 +853,8 @@ class GPT(nn.Module):
 
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         x = self.tok_emb(input_ids)
+        if self.ngram is not None:
+            x = x + self.ngram(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
         x = self.smear(x)
         x0 = x
@@ -958,6 +992,9 @@ def main() -> None:
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
+        ngram_n=args.ngram_n,
+        ngram_buckets=args.ngram_buckets,
+        ngram_dim=args.ngram_dim,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -1302,6 +1339,90 @@ def main() -> None:
         #   1. Score the chunk (record NLL + bytes)
         #   2. Train LoRA on that chunk (so later chunks benefit from adaptation)
         # This is legal: every token is scored BEFORE being trained on.
+
+        # N-gram cache helpers
+        NGRAM_ENABLED = int(os.environ.get("NGRAM_EVAL", "0"))
+        NGRAM_ORDERS_EVAL = list(range(2, 8))
+        NGRAM_BUCKETS_EVAL = 4 * 1024 * 1024
+        NGRAM_PRIMES_EVAL = [36313, 27191, 51647, 81929, 131071, 65537, 104729]
+        NGRAM_MIN_COUNT_EVAL = 2
+        NGRAM_ENT_BASE = 0.05
+        NGRAM_ENT_RANGE = 0.55
+
+        def _get_logits(mdl, x_ids):
+            """Extract logits without computing loss."""
+            xe = mdl.tok_emb(x_ids)
+            if mdl.ngram is not None:
+                xe = xe + mdl.ngram(x_ids)
+            xe = F.rms_norm(xe, (xe.size(-1),))
+            xe = mdl.smear(xe)
+            x0 = xe
+            skips = []
+            for ii in range(mdl.num_encoder_layers):
+                xe = mdl.blocks[ii](xe, x0)
+                skips.append(xe)
+            for ii in range(mdl.num_decoder_layers):
+                if skips:
+                    xe = xe + mdl.skip_weights[ii].to(dtype=xe.dtype)[None, None, :] * skips.pop()
+                xe = mdl.blocks[mdl.num_encoder_layers + ii](xe, x0)
+            xe = mdl.final_norm(xe)
+            lp = F.linear(xe, mdl.tok_emb.weight)
+            return mdl.logit_softcap * torch.tanh(lp / mdl.logit_softcap)
+
+        def _ngram_hash(tokens_np, pos, order):
+            if pos < order - 1:
+                return -1
+            h = 0
+            for k in range(order - 1):
+                h ^= int(tokens_np[pos - order + 1 + k]) * NGRAM_PRIMES_EVAL[k]
+            return h & (NGRAM_BUCKETS_EVAL - 1)
+
+        def _score_chunk_with_ngram(mdl, x, y, ngram_tables, doc_tokens_np, chunk_start_in_doc):
+            """Score a chunk, optionally applying n-gram interpolation. Returns total NLL."""
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits = _get_logits(mdl, x)
+            log_probs = F.log_softmax(logits[0].float(), dim=-1)  # [T, V]
+            targets = y[0]  # [T]
+            chunk_len = targets.size(0)
+            total_nll = 0.0
+            for t in range(chunk_len):
+                tgt = int(targets[t].item())
+                model_lp = log_probs[t]
+                # N-gram lookup
+                doc_pos = chunk_start_in_doc + t + 1  # position in document of target token
+                ng_p = None
+                for oi in range(len(NGRAM_ORDERS_EVAL) - 1, -1, -1):
+                    order = NGRAM_ORDERS_EVAL[oi]
+                    h = _ngram_hash(doc_tokens_np, doc_pos, order)
+                    if h < 0:
+                        continue
+                    bucket = ngram_tables[oi].get(h)
+                    if bucket is None:
+                        continue
+                    total_count = sum(bucket.values())
+                    if total_count < NGRAM_MIN_COUNT_EVAL:
+                        continue
+                    ng_p = bucket.get(tgt, 0) / total_count
+                    break
+                if ng_p is not None:
+                    model_p_np = model_lp.detach().cpu().numpy()
+                    entropy = -float((torch.exp(model_lp) * model_lp).sum().item())
+                    entropy = max(entropy, 0.0)
+                    alpha = NGRAM_ENT_BASE + NGRAM_ENT_RANGE / (1.0 + math.exp(-2.0 * (entropy - 4.0)))
+                    mixed_p = (1 - alpha) * math.exp(float(model_lp[tgt].item())) + alpha * ng_p
+                    total_nll += -math.log(max(mixed_p, 1e-10))
+                else:
+                    total_nll += -float(model_lp[tgt].item())
+                # Update cache (score-first: after scoring)
+                for oi, order in enumerate(NGRAM_ORDERS_EVAL):
+                    h = _ngram_hash(doc_tokens_np, doc_pos, order)
+                    if h < 0:
+                        continue
+                    if h not in ngram_tables[oi]:
+                        ngram_tables[oi][h] = {}
+                    ngram_tables[oi][h][tgt] = ngram_tables[oi][h].get(tgt, 0) + 1
+            return total_nll
+
         ttt_enabled = int(os.environ.get("TTT_ENABLED", "1"))
         ttt_max_docs = int(os.environ.get("TTT_MAX_DOCS", "0"))  # 0 = all docs
         ttt_min_doc_len = int(os.environ.get("TTT_MIN_DOC_LEN", "32"))  # skip tiny docs for TTT
@@ -1378,16 +1499,26 @@ def main() -> None:
             ttt_tokens = torch.zeros((), device=device, dtype=torch.float64)
             t_ttt = time.perf_counter()
 
+            # Init n-gram tables (one set shared across all docs for cumulative learning)
+            ngram_tables = [{} for _ in range(len(NGRAM_ORDERS_EVAL))] if NGRAM_ENABLED else None
+
             # Short docs: score without TTT adaptation (not enough context to benefit)
             base_model.eval()
             with torch.no_grad():
                 for ds, dl in my_short:
                     x = val_tokens[ds:ds + dl - 1].to(device=device, dtype=torch.int64).unsqueeze(0)
                     y = val_tokens[ds + 1:ds + dl].to(device=device, dtype=torch.int64).unsqueeze(0)
-                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                        loss = base_model(x, y)
                     n = dl - 1
-                    ttt_nll += loss.to(torch.float64) * n
+
+                    if NGRAM_ENABLED:
+                        doc_np = val_tokens[ds:ds + dl].cpu().numpy()
+                        chunk_nll = _score_chunk_with_ngram(base_model, x, y, ngram_tables, doc_np, 0)
+                        ttt_nll += chunk_nll
+                    else:
+                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                            loss = base_model(x, y)
+                        ttt_nll += loss.to(torch.float64) * n
+
                     ttt_tokens += n
                     prev_ids = x.reshape(-1)
                     tgt_ids = y.reshape(-1)
@@ -1405,6 +1536,7 @@ def main() -> None:
                     m.reset()
                 optimizer = torch.optim.Adam(lora_params, lr=ttt_lr)
 
+                doc_np = val_tokens[ds:ds + dl].cpu().numpy() if NGRAM_ENABLED else None
                 pred_len = dl - 1  # number of next-token predictions
                 for chunk_start in range(0, pred_len, ttt_chunk_size):
                     chunk_end = min(chunk_start + ttt_chunk_size, pred_len)
@@ -1417,31 +1549,59 @@ def main() -> None:
 
                     is_last_chunk = (chunk_end >= pred_len)
 
-                    # Forward pass — need grads only if we'll train after
-                    if is_last_chunk:
-                        base_model.eval()
-                        with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                            loss = base_model(x, y)
+                    if NGRAM_ENABLED:
+                        # Score with n-gram interpolation
+                        if is_last_chunk:
+                            base_model.eval()
+                            with torch.no_grad():
+                                chunk_nll = _score_chunk_with_ngram(base_model, x, y, ngram_tables, doc_np, chunk_start)
+                        else:
+                            base_model.eval()
+                            with torch.no_grad():
+                                chunk_nll = _score_chunk_with_ngram(base_model, x, y, ngram_tables, doc_np, chunk_start)
+                            # Also need a forward pass with grads for training
+                            base_model.train()
+                            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                                loss = base_model(x, y)
+
+                        with torch.no_grad():
+                            ttt_nll += chunk_nll
+                            ttt_tokens += chunk_len
+                            prev_ids = x.reshape(-1)
+                            tgt_ids = y.reshape(-1)
+                            tb = base_bytes_lut[tgt_ids].to(torch.float64)
+                            tb += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(torch.float64)
+                            ttt_bytes += tb.sum()
+
+                        # Train LoRA
+                        if not is_last_chunk:
+                            optimizer.zero_grad()
+                            loss.backward()
+                            optimizer.step()
                     else:
-                        base_model.train()
-                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                            loss = base_model(x, y)
+                        # Original path: no n-gram
+                        if is_last_chunk:
+                            base_model.eval()
+                            with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                                loss = base_model(x, y)
+                        else:
+                            base_model.train()
+                            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                                loss = base_model(x, y)
 
-                    # 1. Score: accumulate NLL + bytes for this chunk
-                    with torch.no_grad():
-                        ttt_nll += loss.to(torch.float64) * chunk_len
-                        ttt_tokens += chunk_len
-                        prev_ids = x.reshape(-1)
-                        tgt_ids = y.reshape(-1)
-                        tb = base_bytes_lut[tgt_ids].to(torch.float64)
-                        tb += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(torch.float64)
-                        ttt_bytes += tb.sum()
+                        with torch.no_grad():
+                            ttt_nll += loss.to(torch.float64) * chunk_len
+                            ttt_tokens += chunk_len
+                            prev_ids = x.reshape(-1)
+                            tgt_ids = y.reshape(-1)
+                            tb = base_bytes_lut[tgt_ids].to(torch.float64)
+                            tb += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(torch.float64)
+                            ttt_bytes += tb.sum()
 
-                    # 2. Train LoRA on this chunk (so subsequent chunks benefit)
-                    if not is_last_chunk:
-                        optimizer.zero_grad()
-                        loss.backward()
-                        optimizer.step()
+                        if not is_last_chunk:
+                            optimizer.zero_grad()
+                            loss.backward()
+                            optimizer.step()
 
                 if (di + 1) % 1000 == 0:
                     elapsed = time.perf_counter() - t_ttt
@@ -1455,7 +1615,8 @@ def main() -> None:
                 dist.all_reduce(ttt_tokens, op=dist.ReduceOp.SUM)
             ttt_bpb = (ttt_nll.item() / math.log(2.0)) / max(ttt_bytes.item(), 1.0)
             ttt_loss = ttt_nll.item() / max(ttt_tokens.item(), 1.0)
-            log0(f"final_ttt val_loss:{ttt_loss:.4f} val_bpb:{ttt_bpb:.4f} "
+            ngram_tag = "+ngram" if NGRAM_ENABLED else ""
+            log0(f"final_ttt{ngram_tag} val_loss:{ttt_loss:.4f} val_bpb:{ttt_bpb:.4f} "
                  f"docs:{n_ttt_docs} eval_time:{1000.0 * (time.perf_counter() - t_ttt):.0f}ms")
 
     except ImportError:

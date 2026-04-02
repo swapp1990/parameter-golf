@@ -1,0 +1,9 @@
+=== N-gram Proof Test (200 docs) ===
+1. Chunked, no ngram:    1.2686  [34s]
+2. Chunked + ngram:      1.3014  [77s]
+3. Full-ctx, no ngram:   1.1731  [94s]
+4. Full-ctx + ngram:     1.2171  [121s]
+
+N-gram effect (chunked): +0.0328  HURTS
+N-gram effect (full):    +0.0441  HURTS
+Full-ctx improvement:    -0.0955

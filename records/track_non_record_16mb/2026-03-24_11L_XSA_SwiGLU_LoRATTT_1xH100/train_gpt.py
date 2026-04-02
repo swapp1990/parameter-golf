@@ -75,6 +75,13 @@ class Hyperparameters:
     ngram_buckets = int(os.environ.get("NGRAM_BUCKETS", 8192))
     ngram_dim = int(os.environ.get("NGRAM_DIM", 64))
 
+    # XSA config
+    xsa_last_n = int(os.environ.get("XSA_LAST_N", 4))  # how many layers get XSA (from the end)
+
+    # EMA config
+    ema_enabled = int(os.environ.get("EMA_ENABLED", 0))
+    ema_decay = float(os.environ.get("EMA_DECAY", 0.997))
+
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
     head_lr = float(os.environ.get("HEAD_LR", 0.008))
@@ -802,6 +809,7 @@ class GPT(nn.Module):
         ngram_n: int = 0,
         ngram_buckets: int = 8192,
         ngram_dim: int = 64,
+        xsa_last_n: int = 4,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -825,7 +833,7 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
-                    use_xsa=(i >= num_layers - 4),
+                    use_xsa=(i >= num_layers - xsa_last_n),
                 )
                 for i in range(num_layers)
             ]
@@ -995,11 +1003,23 @@ def main() -> None:
         ngram_n=args.ngram_n,
         ngram_buckets=args.ngram_buckets,
         ngram_dim=args.ngram_dim,
+        xsa_last_n=args.xsa_last_n,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
+
+    # Resume from checkpoint if specified
+    resume_from = os.environ.get("RESUME_FROM", "")
+    resume_step = 0
+    if resume_from and os.path.exists(resume_from):
+        log0(f"Resuming from checkpoint: {resume_from}")
+        resume_state = torch.load(resume_from, map_location="cpu", weights_only=False)
+        base_model.load_state_dict(resume_state, strict=False)
+        resume_step = int(os.environ.get("RESUME_STEP", "0"))
+        log0(f"Resumed at step {resume_step}")
+
     compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
 
@@ -1126,10 +1146,16 @@ def main() -> None:
 
     training_time_ms = 0.0
     stop_after_step: int | None = None
+
+    # EMA initialization
+    if args.ema_enabled:
+        base_model._ema_state = {n: p.detach().clone().float() for n, p in base_model.state_dict().items()}
+        log0(f"EMA: enabled, decay={args.ema_decay}")
+
     torch.cuda.synchronize()
     t0 = time.perf_counter()
 
-    step = 0
+    step = resume_step
     while True:
         last_step = step == args.iterations or (stop_after_step is not None and step >= stop_after_step)
 
@@ -1193,6 +1219,12 @@ def main() -> None:
             opt.step()
         zero_grad_all()
 
+        # EMA update
+        if args.ema_enabled and hasattr(base_model, '_ema_state'):
+            with torch.no_grad():
+                for n, p in base_model.state_dict().items():
+                    base_model._ema_state[n].lerp_(p.float(), 1 - args.ema_decay)
+
         step += 1
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         should_log_train = (
@@ -1244,8 +1276,14 @@ def main() -> None:
     # the compressed int8+zlib artifact and validate the round-tripped weights.
 
 
-    # Apply SWA averaged weights
-    if hasattr(base_model, '_swa_state') and base_model._swa_state is not None and base_model._swa_count > 1:
+    # Apply EMA weights if enabled (takes priority over SWA)
+    if args.ema_enabled and hasattr(base_model, '_ema_state'):
+        log0("EMA: applying averaged weights")
+        for n, t in base_model._ema_state.items():
+            base_model.state_dict()[n].copy_(t.to(dtype=base_model.state_dict()[n].dtype))
+        log0("EMA: applied")
+    # Apply SWA averaged weights (if no EMA, or as fallback)
+    elif hasattr(base_model, '_swa_state') and base_model._swa_state is not None and base_model._swa_count > 1:
         log0(f"SWA: averaging {base_model._swa_count} checkpoints")
         for n, t in base_model._swa_state.items():
             avg = (t / base_model._swa_count).to(dtype=base_model.state_dict()[n].dtype)

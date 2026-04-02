@@ -85,6 +85,7 @@ base_model = GPT(
     logit_softcap=args.logit_softcap,
     rope_base=args.rope_base,
     qk_gain_init=args.qk_gain_init,
+    xsa_last_n=args.xsa_last_n,
 ).to(device)
 
 # Load mixed-quantized checkpoint (same as original roundtrip validation)

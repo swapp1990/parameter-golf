@@ -1,0 +1,73 @@
+Loading mixed-quantized model from /runpod-volume/parameter-golf/final_model.mixed.ptz...
+  Artifact: 15.74 MB
+  Params: 26502232
+Loading val tokens...
+  Val tokens: 62021846
+
+============================================================
+Exp 28: SGD All-Weights TTT (50000 docs)
+SGD lr=0.002, momentum=0.9
+Train chunk=1024, Score cap=2048
+Short docs: 0, Long docs: 50000
+============================================================
+
+  Doc 1000/50000: bpb=1.1565 elapsed=80s eta=3922s
+  Doc 2000/50000: bpb=1.1536 elapsed=162s eta=3891s
+  Doc 3000/50000: bpb=1.1537 elapsed=240s eta=3759s
+  Doc 4000/50000: bpb=1.1502 elapsed=316s eta=3632s
+  Doc 5000/50000: bpb=1.1518 elapsed=395s eta=3559s
+  Doc 6000/50000: bpb=1.1511 elapsed=472s eta=3462s
+  Doc 7000/50000: bpb=1.1514 elapsed=553s eta=3396s
+  Doc 8000/50000: bpb=1.1521 elapsed=628s eta=3295s
+  Doc 9000/50000: bpb=1.1531 elapsed=703s eta=3201s
+  Doc 10000/50000: bpb=1.1536 elapsed=781s eta=3124s
+  Doc 11000/50000: bpb=1.1523 elapsed=857s eta=3037s
+  Doc 12000/50000: bpb=1.1514 elapsed=932s eta=2952s
+  Doc 13000/50000: bpb=1.1499 elapsed=1011s eta=2877s
+  Doc 14000/50000: bpb=1.1481 elapsed=1087s eta=2794s
+  Doc 15000/50000: bpb=1.1473 elapsed=1166s eta=2721s
+  Doc 16000/50000: bpb=1.1464 elapsed=1247s eta=2649s
+  Doc 17000/50000: bpb=1.1449 elapsed=1324s eta=2569s
+  Doc 18000/50000: bpb=1.1430 elapsed=1399s eta=2486s
+  Doc 19000/50000: bpb=1.1424 elapsed=1478s eta=2412s
+  Doc 20000/50000: bpb=1.1430 elapsed=1556s eta=2334s
+  Doc 21000/50000: bpb=1.1428 elapsed=1633s eta=2255s
+  Doc 22000/50000: bpb=1.1425 elapsed=1709s eta=2174s
+  Doc 23000/50000: bpb=1.1428 elapsed=1783s eta=2093s
+  Doc 24000/50000: bpb=1.1428 elapsed=1865s eta=2020s
+  Doc 25000/50000: bpb=1.1433 elapsed=1947s eta=1947s
+  Doc 26000/50000: bpb=1.1443 elapsed=2019s eta=1864s
+  Doc 27000/50000: bpb=1.1449 elapsed=2091s eta=1782s
+  Doc 28000/50000: bpb=1.1452 elapsed=2166s eta=1702s
+  Doc 29000/50000: bpb=1.1452 elapsed=2242s eta=1624s
+  Doc 30000/50000: bpb=1.1448 elapsed=2322s eta=1548s
+  Doc 31000/50000: bpb=1.1443 elapsed=2398s eta=1470s
+  Doc 32000/50000: bpb=1.1437 elapsed=2476s eta=1393s
+  Doc 33000/50000: bpb=1.1432 elapsed=2557s eta=1317s
+  Doc 34000/50000: bpb=1.1423 elapsed=2635s eta=1240s
+  Doc 35000/50000: bpb=1.1414 elapsed=2711s eta=1162s
+  Doc 36000/50000: bpb=1.1412 elapsed=2786s eta=1083s
+  Doc 37000/50000: bpb=1.1420 elapsed=2864s eta=1006s
+  Doc 38000/50000: bpb=1.1424 elapsed=2949s eta=931s
+  Doc 39000/50000: bpb=1.1424 elapsed=3024s eta=853s
+  Doc 40000/50000: bpb=1.1426 elapsed=3100s eta=775s
+  Doc 41000/50000: bpb=1.1431 elapsed=3174s eta=697s
+  Doc 42000/50000: bpb=1.1435 elapsed=3252s eta=619s
+  Doc 43000/50000: bpb=1.1441 elapsed=3330s eta=542s
+  Doc 44000/50000: bpb=1.1446 elapsed=3402s eta=464s
+  Doc 45000/50000: bpb=1.1448 elapsed=3478s eta=386s
+  Doc 46000/50000: bpb=1.1445 elapsed=3553s eta=309s
+  Doc 47000/50000: bpb=1.1441 elapsed=3628s eta=232s
+  Doc 48000/50000: bpb=1.1438 elapsed=3705s eta=154s
+  Doc 49000/50000: bpb=1.1433 elapsed=3780s eta=77s
+  Doc 50000/50000: bpb=1.1429 elapsed=3859s eta=0s
+
+============================================================
+RESULTS
+============================================================
+Pre-TTT (mixed quant):  val_bpb=1.1877
+LoRA TTT (baseline):    val_bpb=1.1540  delta=-0.0337
+SGD all-weights TTT:    val_bpb=1.1429  delta=-0.0448
+Improvement vs LoRA:    -0.0111
+Docs: 50000, Tokens: 46243627, Time: 3859s
+============================================================

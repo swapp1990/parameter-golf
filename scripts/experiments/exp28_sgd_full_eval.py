@@ -64,8 +64,9 @@ model = GPT(
     tie_embeddings=args.tie_embeddings, tied_embed_init_std=args.tied_embed_init_std,
     logit_softcap=args.logit_softcap, rope_base=args.rope_base,
     qk_gain_init=args.qk_gain_init, xsa_last_n=args.xsa_last_n,
+    layer_schedule=args.layer_schedule if args.layer_schedule else None,
 ).to(device)
-model.load_state_dict(base_state_dict, strict=True)
+model.load_state_dict(base_state_dict, strict=False)
 total_params = sum(p.numel() for p in model.parameters())
 print(f"  Params: {total_params}")
 

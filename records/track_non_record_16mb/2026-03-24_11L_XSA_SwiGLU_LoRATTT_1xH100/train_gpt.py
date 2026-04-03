@@ -78,6 +78,13 @@ class Hyperparameters:
     # XSA config
     xsa_last_n = int(os.environ.get("XSA_LAST_N", 4))  # how many layers get XSA (from the end)
 
+    # Depth recurrence config
+    # LAYER_SCHEDULE: comma-separated block indices for forward pass order
+    # e.g. "0,1,2,3,4,5,3,4,5,6,7,8" = 9 unique blocks, middle 3 shared (looped 2x)
+    # Empty string = no recurrence (use num_layers unique blocks as normal)
+    layer_schedule_str = os.environ.get("LAYER_SCHEDULE", "")
+    layer_schedule = [int(x) for x in layer_schedule_str.split(",") if x.strip()] if layer_schedule_str else []
+
     # EMA config
     ema_enabled = int(os.environ.get("EMA_ENABLED", 0))
     ema_decay = float(os.environ.get("EMA_DECAY", 0.997))
@@ -810,6 +817,7 @@ class GPT(nn.Module):
         ngram_buckets: int = 8192,
         ngram_dim: int = 64,
         xsa_last_n: int = 4,
+        layer_schedule: list = None,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -820,8 +828,20 @@ class GPT(nn.Module):
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.ngram = NgramHashEmbedding(ngram_n, ngram_buckets, ngram_dim, model_dim) if ngram_n > 0 else None
         self.smear = SmearGate(model_dim)
-        self.num_encoder_layers = num_layers // 2
-        self.num_decoder_layers = num_layers - self.num_encoder_layers
+
+        # Depth recurrence: layer_schedule defines the forward pass order
+        # If empty/None, use num_layers unique blocks (standard behavior)
+        if layer_schedule:
+            self.layer_schedule = layer_schedule
+            num_unique_blocks = max(layer_schedule) + 1
+            effective_layers = len(layer_schedule)
+        else:
+            self.layer_schedule = list(range(num_layers))
+            num_unique_blocks = num_layers
+            effective_layers = num_layers
+
+        self.num_encoder_layers = effective_layers // 2
+        self.num_decoder_layers = effective_layers - self.num_encoder_layers
         self.num_skip_weights = min(self.num_encoder_layers, self.num_decoder_layers)
         self.skip_weights = nn.Parameter(torch.ones(self.num_skip_weights, model_dim, dtype=torch.float32))
         self.blocks = nn.ModuleList(
@@ -833,9 +853,9 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
-                    use_xsa=(i >= num_layers - xsa_last_n),
+                    use_xsa=(i >= num_unique_blocks - xsa_last_n) if xsa_last_n < num_unique_blocks else True,
                 )
-                for i in range(num_layers)
+                for i in range(num_unique_blocks)
             ]
         )
         self.final_norm = RMSNorm()
@@ -869,13 +889,16 @@ class GPT(nn.Module):
         skips: list[Tensor] = []
 
         # First half stores skips; second half reuses them in reverse order.
+        # Uses layer_schedule to support depth recurrence (shared blocks).
         for i in range(self.num_encoder_layers):
-            x = self.blocks[i](x, x0)
+            block_idx = self.layer_schedule[i]
+            x = self.blocks[block_idx](x, x0)
             skips.append(x)
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x, x0)
+            block_idx = self.layer_schedule[self.num_encoder_layers + i]
+            x = self.blocks[block_idx](x, x0)
 
         x = self.final_norm(x).reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
@@ -1004,6 +1027,7 @@ def main() -> None:
         ngram_buckets=args.ngram_buckets,
         ngram_dim=args.ngram_dim,
         xsa_last_n=args.xsa_last_n,
+        layer_schedule=args.layer_schedule if args.layer_schedule else None,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -1074,6 +1098,35 @@ def main() -> None:
 
     n_params = sum(p.numel() for p in base_model.parameters())
     log0(f"model_params:{n_params}")
+
+    # --- Artifact size pre-check ---
+    # Estimate mixed quant artifact size BEFORE training to avoid wasted compute.
+    # Set SKIP_SIZE_CHECK=1 to override (e.g., for experiments where size doesn't matter).
+    skip_size_check = int(os.environ.get("SKIP_SIZE_CHECK", "0"))
+    max_artifact_bytes = int(os.environ.get("MAX_ARTIFACT_BYTES", "16000000"))  # 16MB = 16,000,000 bytes (competition limit)
+    if rank == 0 and not skip_size_check:
+        try:
+            import zstandard
+            _check_sd = {k: v.detach().cpu().float() for k, v in base_model.state_dict().items()}
+            _check_quant = quantize_state_dict_mixed(_check_sd)
+            _check_buf = io.BytesIO()
+            torch.save(_check_quant, _check_buf)
+            _check_raw = _check_buf.getvalue()
+            _check_compressed = zstandard.ZstdCompressor(level=22).compress(_check_raw)
+            _check_code_size = len(code.encode("utf-8"))
+            _check_total = len(_check_compressed) + _check_code_size
+            log0(f"size_check: mixed_quant={len(_check_compressed)} code={_check_code_size} total={_check_total} limit={max_artifact_bytes}")
+            if _check_total > max_artifact_bytes:
+                log0(f"SIZE_CHECK_FAILED: {_check_total} bytes > {max_artifact_bytes} limit ({_check_total - max_artifact_bytes} bytes over)")
+                log0(f"  Reduce MODEL_DIM or NUM_LAYERS. Set SKIP_SIZE_CHECK=1 to override.")
+                sys.exit(1)
+            else:
+                headroom = max_artifact_bytes - _check_total
+                log0(f"size_check: PASSED ({headroom} bytes headroom, {headroom/1024:.1f} KB)")
+            del _check_sd, _check_quant, _check_buf, _check_raw, _check_compressed
+        except Exception as e:
+            log0(f"size_check: WARNING could not estimate size: {e}")
+
     log0(f"world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
     log0("sdp_backends:cudnn=False flash=True mem_efficient=False math=False")
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
@@ -1397,12 +1450,14 @@ def main() -> None:
             x0 = xe
             skips = []
             for ii in range(mdl.num_encoder_layers):
-                xe = mdl.blocks[ii](xe, x0)
+                block_idx = mdl.layer_schedule[ii]
+                xe = mdl.blocks[block_idx](xe, x0)
                 skips.append(xe)
             for ii in range(mdl.num_decoder_layers):
                 if skips:
                     xe = xe + mdl.skip_weights[ii].to(dtype=xe.dtype)[None, None, :] * skips.pop()
-                xe = mdl.blocks[mdl.num_encoder_layers + ii](xe, x0)
+                block_idx = mdl.layer_schedule[mdl.num_encoder_layers + ii]
+                xe = mdl.blocks[block_idx](xe, x0)
             xe = mdl.final_norm(xe)
             lp = F.linear(xe, mdl.tok_emb.weight)
             return mdl.logit_softcap * torch.tanh(lp / mdl.logit_softcap)

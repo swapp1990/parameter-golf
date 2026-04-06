@@ -31,16 +31,18 @@ Additionally, we hook block 3's output at each of its 3 appearances in the full 
 
 **Important caveat**: The model was *trained* with schedule A. All other schedules are mismatched — the model never saw them during training. So these results measure **how dependent the model is on its exact schedule**, not what the optimal schedule would be if trained from scratch.
 
-## 3. Schedules Tested
+## 3. Ablation Schedules
 
-| Name | Schedule | Eff Layers | Description |
-|------|----------|-----------|-------------|
-| **A** | `[0,1,2,3,4,3,4,3,4,5,6,5,6]` | 13 | Full 3x (baseline, as trained) |
-| **B** | `[0,1,2,3,4,3,4,5,6,5,6]` | 11 | 2x recurrence (removed one middle pass) |
-| **C** | `[0,1,2,3,4,5,6]` | 7 | No recurrence (each block once) |
-| **D** | `[0,1,2,3,4,3,4,3,4,5,6]` | 11 | 3x middle only (removed end recurrence) |
-| **E** | `[0,1,2,3,4,5,6,5,6]` | 9 | 2x end only (removed middle recurrence) |
-| **F** | `[0,1,2,3,4,3,4,3,4,3,4,5,6,5,6,5,6]` | 17 | 4x recurrence (added extra passes) |
+The model was trained with schedule A. All other schedules are **inference-time ablations** — we load the same trained weights but change the forward pass order. This measures how dependent the model is on its exact recurrence pattern, not what would happen if we trained with a different schedule.
+
+| Name | Schedule | Eff Layers | What's different from A |
+|------|----------|-----------|------------------------|
+| **A** | `[0,1,2,3,4,3,4,3,4,5,6,5,6]` | 13 | Nothing (original trained schedule) |
+| **B** | `[0,1,2,3,4,3,4,5,6,5,6]` | 11 | Removed one middle pass of blocks 3-4 |
+| **C** | `[0,1,2,3,4,5,6]` | 7 | Removed all recurrence (each block once) |
+| **D** | `[0,1,2,3,4,3,4,3,4,5,6]` | 11 | Removed end recurrence of blocks 5-6 |
+| **E** | `[0,1,2,3,4,5,6,5,6]` | 9 | Removed middle recurrence of blocks 3-4 |
+| **F** | `[0,1,2,3,4,3,4,3,4,3,4,5,6,5,6,5,6]` | 17 | Added extra passes (4x middle, 3x end) |
 
 ## 4. Results
 

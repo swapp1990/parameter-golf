@@ -1,0 +1,79 @@
+Loading mixed-quantized model from /runpod-volume/parameter-golf/final_model.mixed.ptz...
+  Artifact: 15.74 MB
+Loading val tokens...
+  Val tokens: 62021846
+Documents: 500 (short=0, long=500)
+
+############################################################
+# Exp 28/31 Quick TTT Tests (500 docs)
+# XSA_LAST_N=11, train_chunk=1024, score_cap=2048
+############################################################
+
+============================================================
+Variant A: SGD-all-weights: SGD all-weights lr=0.002 momentum=0.9
+============================================================
+  All weights unfrozen, params=26502232
+  [A: SGD-all-weights] Doc 100/500: bpb=1.1596 elapsed=9s
+  [A: SGD-all-weights] Doc 200/500: bpb=1.1602 elapsed=17s
+  [A: SGD-all-weights] Doc 300/500: bpb=1.1465 elapsed=24s
+  [A: SGD-all-weights] Doc 400/500: bpb=1.1614 elapsed=32s
+  [A: SGD-all-weights] Doc 500/500: bpb=1.1652 elapsed=39s
+  [A: SGD-all-weights] DONE: bpb=1.1652 time=39s
+
+============================================================
+Variant B: SGD-LoRA-r8
+============================================================
+  LoRA rank=8, params=157696
+  [B: SGD-LoRA-r8] Doc 100/500: bpb=1.1854 elapsed=8s
+  [B: SGD-LoRA-r8] Doc 200/500: bpb=1.1856 elapsed=15s
+  [B: SGD-LoRA-r8] Doc 300/500: bpb=1.1715 elapsed=22s
+  [B: SGD-LoRA-r8] Doc 400/500: bpb=1.1867 elapsed=29s
+  [B: SGD-LoRA-r8] Doc 500/500: bpb=1.1905 elapsed=36s
+  [B: SGD-LoRA-r8] DONE: bpb=1.1905 time=36s
+
+============================================================
+Variant C: Adam-LoRA-r8 (baseline)
+============================================================
+  LoRA rank=8, params=157696
+  [C: Adam-LoRA-r8 (baseline)] Doc 100/500: bpb=1.1759 elapsed=8s
+  [C: Adam-LoRA-r8 (baseline)] Doc 200/500: bpb=1.1745 elapsed=15s
+  [C: Adam-LoRA-r8 (baseline)] Doc 300/500: bpb=1.1602 elapsed=22s
+  [C: Adam-LoRA-r8 (baseline)] Doc 400/500: bpb=1.1757 elapsed=29s
+  [C: Adam-LoRA-r8 (baseline)] Doc 500/500: bpb=1.1792 elapsed=36s
+  [C: Adam-LoRA-r8 (baseline)] DONE: bpb=1.1792 time=36s
+
+============================================================
+Variant D: Adam-LoRA-r16
+============================================================
+  LoRA rank=16, params=315392
+  [D: Adam-LoRA-r16] Doc 100/500: bpb=1.1760 elapsed=8s
+  [D: Adam-LoRA-r16] Doc 200/500: bpb=1.1749 elapsed=15s
+  [D: Adam-LoRA-r16] Doc 300/500: bpb=1.1605 elapsed=22s
+  [D: Adam-LoRA-r16] Doc 400/500: bpb=1.1759 elapsed=29s
+  [D: Adam-LoRA-r16] Doc 500/500: bpb=1.1795 elapsed=36s
+  [D: Adam-LoRA-r16] DONE: bpb=1.1795 time=36s
+
+============================================================
+Variant E: Adam-LoRA-r32
+============================================================
+  LoRA rank=32, params=630784
+  [E: Adam-LoRA-r32] Doc 100/500: bpb=1.1763 elapsed=8s
+  [E: Adam-LoRA-r32] Doc 200/500: bpb=1.1755 elapsed=15s
+  [E: Adam-LoRA-r32] Doc 300/500: bpb=1.1611 elapsed=22s
+  [E: Adam-LoRA-r32] Doc 400/500: bpb=1.1765 elapsed=30s
+  [E: Adam-LoRA-r32] Doc 500/500: bpb=1.1801 elapsed=37s
+  [E: Adam-LoRA-r32] DONE: bpb=1.1801 time=37s
+
+======================================================================
+FINAL SUMMARY (500 docs)
+======================================================================
+Variant                                            BPB     Time
+--------------------------------------------- -------- --------
+A: SGD-all-weights (lr=0.002,m=0.9)             1.1652      39s
+B: SGD-LoRA-r8 (lr=0.002,m=0.9)                 1.1905      36s
+C: Adam-LoRA-r8 (lr=0.05) BASELINE              1.1792      36s
+D: Adam-LoRA-r16 (lr=0.05)                      1.1795      36s
+E: Adam-LoRA-r32 (lr=0.05)                      1.1801      37s
+======================================================================
+
+Best: A: SGD-all-weights (lr=0.002,m=0.9) (bpb=1.1652, delta vs baseline=-0.0139)

@@ -1,0 +1,96 @@
+Parameter Golf Experiment Runner
+Base dir: /root/parameter-golf
+Experiments: [21, 22, 24, 25]
+Device: NVIDIA GeForce RTX 2080 Ti
+
+
+================================================================================
+EXP 21: GPTQ-lite - Optimal Clip Percentile Search
+================================================================================
+
+--- Baseline: Current mixed quantization ---
+  Baseline mixed quant: val_loss=2.0116, val_bpb=1.1914
+
+--- Loading unquantized checkpoint ---
+  Unquantized: val_loss=1.9893, val_bpb=1.1782
+
+--- Searching clip percentiles: [0.999, 0.9995, 0.9999, 0.99999, 1.0] ---
+  tok_emb.weight: best_pct=0.99999, mse=2.74e-04
+  blocks.0.attn.c_q.weight: best_pct=0.9995, mse=3.03e-04
+  blocks.0.attn.c_k.weight: best_pct=0.9995, mse=3.37e-04
+  blocks.0.attn.c_v.weight: best_pct=0.9995, mse=1.61e-04
+  blocks.0.attn.proj.weight: best_pct=0.9995, mse=2.07e-04
+  blocks.1.attn.c_k.weight: best_pct=0.9995, mse=3.55e-04
+  blocks.2.mlp.gate.weight: best_pct=0.999, mse=1.39e-03
+  blocks.4.attn.c_q.weight: best_pct=0.9995, mse=2.83e-04
+  blocks.5.attn.proj.weight: best_pct=0.9995, mse=3.86e-04
+  blocks.6.mlp.proj.weight: best_pct=0.999, mse=8.01e-04
+  blocks.8.attn.c_v.weight: best_pct=0.9995, mse=7.63e-04
+  blocks.9.mlp.up.weight: best_pct=0.999, mse=1.47e-03
+  Searched 78 weight matrices, 78 improved by clipping
+
+  GPTQ-lite optimized: val_loss=2.0110, val_bpb=1.1910
+
+--- Requantizing with mixed quant (to measure compressed BPB) ---
+  Requantized mixed size: 16671537 bytes (15.90 MB)
+  Requantized mixed: val_loss=2.0110, val_bpb=1.1910
+
+  RESULT: GPTQ-lite requantized BPB=1.1910 vs baseline mixed BPB=1.1914 (delta=-0.0004)
+
+================================================================================
+EXP 22: LeakyReLU^2 Activation (replacing SwiGLU)
+================================================================================
+  Train data found: 1 shard(s)
+  Training with LeakyReLU^2 MLP for 300.0s, batch_tokens=4096
+  step:1 val_loss:6.7320 val_bpb:3.9871 train_loss:6.9309 time:1906485ms
+  FINAL step:1 val_loss:6.7320 val_bpb:3.9871
+
+  RESULT: LeakyReLU^2 final val_loss=6.7320 at step 1
+  Baseline SwiGLU val_loss=2.2538 at step 1000
+
+================================================================================
+EXP 24: EMA (decay=0.997) During Training
+================================================================================
+  Train data found: 1 shard(s)
+  Training with EMA(decay=0.997) for 300.0s, batch_tokens=4096
+  step:1 val_loss:6.7471 val_bpb:3.9960 train_loss:6.9349 time:1875338ms
+
+  Online weights: val_loss=6.7471, val_bpb=3.9960
+  EMA weights:    val_loss=6.9280, val_bpb=4.1032
+  SWA: not enough checkpoints collected (0)
+
+  RESULT: Best val_loss=6.7471 at step 1
+  Baseline SwiGLU val_loss=2.2538 at step 1000
+
+================================================================================
+EXP 25: XSA on All Layers (11/11 instead of 4/11)
+================================================================================
+  Train data found: 1 shard(s)
+  XSA enabled on all 11 layers
+  Training XSA-all for 300.0s, batch_tokens=4096
+  step:1 val_loss:6.7726 val_bpb:4.0111 train_loss:6.9310 time:1895791ms
+  FINAL step:1 val_loss:6.7726 val_bpb:4.0111
+
+  --- Training baseline (XSA last-4 only) for same duration ---
+  Baseline (XSA last-4): val_loss=3.5180, val_bpb=2.0835 at step 990
+
+  RESULT: XSA-all val_loss=6.7726 vs baseline val_loss=3.5180 (delta=+3.2547)
+
+================================================================================
+EXPERIMENT SUMMARY
+================================================================================
+  Exp | Name                                | Key Metric           | Baseline     | Delta      | Worth Full Run?
+--------------------------------------------------------------------------------------------------------------
+   21 | GPTQ-lite clip search               | BPB=1.1910           | BPB=1.1914   | -0.0004    | MAYBE
+   22 | LeakyReLU^2 (vs SwiGLU)             | loss=6.7320          | loss=2.2538  | 4.4782     | NO
+   24 | EMA (decay=0.997)                   | loss=6.7471          | loss=2.2538  | 0.1809 (EMA-online) | NO
+   25 | XSA all layers                      | loss=6.7726          | loss=3.5180  | 3.2547     | NO
+--------------------------------------------------------------------------------------------------------------
+
+Notes:
+  - Exp 21: Compares requantized BPB (no TTT). Lower is better.
+  - Exp 22: Compares val_loss at comparable step count. Different step counts noted.
+  - Exp 23: Compares BPB on 2K docs (vs baseline 50K docs). Extrapolation needed.
+  - Exp 24: EMA vs online weights at same training budget. Negative delta = EMA wins.
+  - Exp 25: XSA-all vs XSA-last-4, same training config. Negative delta = XSA-all wins.
+  - 'Worth Full Run?' is YES (clear win), MAYBE (marginal/needs more data), NO (no benefit).

@@ -1,0 +1,72 @@
+Loading model...
+Loading val tokens...
+Documents: 500 (short=0, long=500)
+
+############################################################
+# Exp 35: Adaptive TTT (500 docs)
+############################################################
+
+============================================================
+A: Fixed lr=0.005
+============================================================
+  [A: Fixed lr=0.005] Doc 100/500: bpb=1.1578 t=9s
+  [A: Fixed lr=0.005] Doc 200/500: bpb=1.1585 t=17s
+  [A: Fixed lr=0.005] Doc 300/500: bpb=1.1450 t=24s
+  [A: Fixed lr=0.005] Doc 400/500: bpb=1.1599 t=32s
+  [A: Fixed lr=0.005] Doc 500/500: bpb=1.1637 t=39s
+  [A: Fixed lr=0.005] DONE: bpb=1.1637 time=39s
+
+============================================================
+B: Adaptive LR
+============================================================
+  [B: Adaptive LR] Doc 100/500: bpb=1.1608 t=8s
+  [B: Adaptive LR] Doc 200/500: bpb=1.1613 t=16s
+  [B: Adaptive LR] Doc 300/500: bpb=1.1480 t=23s
+  [B: Adaptive LR] Doc 400/500: bpb=1.1629 t=31s
+  [B: Adaptive LR] Doc 500/500: bpb=1.1668 t=38s
+  [B: Adaptive LR] DONE: bpb=1.1668 time=38s
+
+============================================================
+C: Adaptive epochs
+============================================================
+  [C: Adaptive epochs] Doc 100/500: bpb=1.1577 t=9s
+  [C: Adaptive epochs] Doc 200/500: bpb=1.1584 t=17s
+  [C: Adaptive epochs] Doc 300/500: bpb=1.1448 t=24s
+  [C: Adaptive epochs] Doc 400/500: bpb=1.1598 t=32s
+  [C: Adaptive epochs] Doc 500/500: bpb=1.1636 t=40s
+  [C: Adaptive epochs] DONE: bpb=1.1636 time=40s
+
+============================================================
+D: LR grid search
+============================================================
+  [D: LR grid search] Doc 100/500: bpb=1.1571 t=22s
+  [D: LR grid search] Doc 200/500: bpb=1.1579 t=44s
+  [D: LR grid search] Doc 300/500: bpb=1.1443 t=65s
+  [D: LR grid search] Doc 400/500: bpb=1.1592 t=87s
+  [D: LR grid search] Doc 500/500: bpb=1.1631 t=108s
+  [D: LR grid search] DONE: bpb=1.1631 time=108s
+
+============================================================
+E: Short-doc boost
+============================================================
+  [E: Short-doc boost] Doc 100/500: bpb=1.1577 t=7s
+  [E: Short-doc boost] Doc 200/500: bpb=1.1583 t=15s
+  [E: Short-doc boost] Doc 300/500: bpb=1.1448 t=22s
+  [E: Short-doc boost] Doc 400/500: bpb=1.1597 t=29s
+  [E: Short-doc boost] Doc 500/500: bpb=1.1636 t=36s
+  [E: Short-doc boost] DONE: bpb=1.1636 time=36s
+
+======================================================================
+FINAL SUMMARY (500 docs)
+======================================================================
+Variant                                            BPB     Time
+--------------------------------------------- -------- --------
+A: Fixed lr=0.005                               1.1637      39s
+B: Adaptive LR                                  1.1668      38s
+C: Adaptive epochs                              1.1636      40s
+D: LR grid search                               1.1631     108s
+E: Short-doc boost                              1.1636      36s
+======================================================================
+
+Baseline: A = 1.1637
+Best: D: LR grid search = 1.1631 (delta=-0.0006)

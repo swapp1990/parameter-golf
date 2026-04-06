@@ -1,0 +1,73 @@
+
+############################################################
+# Exp 36: Depth Recurrence Smoke Test (500 steps)
+############################################################
+
+============================================================
+BASE: 11 unique, dim=512 | params=26,502,232 | schedule=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+============================================================
+  step    1/500: train_loss=8.1024 val_loss=7.2104 time=1s
+  step  100/500: train_loss=4.2353 val_loss=4.2240 time=19s
+  step  200/500: train_loss=3.4723 val_loss=3.4808 time=36s
+  step  300/500: train_loss=3.2525 val_loss=3.2566 time=54s
+  step  400/500: train_loss=3.0116 val_loss=2.9866 time=72s
+  step  500/500: train_loss=2.8014 val_loss=2.8079 time=90s
+  [BASE: 11 unique, dim=512] DONE: final_val_loss=2.8079 time=90s params=26,502,232
+
+============================================================
+B1: 9 unique (mid shared), dim=512 | params=21,780,040 | schedule=[0, 1, 2, 3, 4, 5, 3, 4, 5, 6, 7, 8]
+============================================================
+  step    1/500: train_loss=8.1165 val_loss=7.1369 time=1s
+  step  100/500: train_loss=3.9737 val_loss=3.9686 time=20s
+  step  200/500: train_loss=3.4310 val_loss=3.4194 time=39s
+  step  300/500: train_loss=3.1884 val_loss=3.1839 time=59s
+  step  400/500: train_loss=2.9135 val_loss=2.9113 time=78s
+  step  500/500: train_loss=2.8486 val_loss=2.7876 time=98s
+  [B1: 9 unique (mid shared), dim=512] DONE: final_val_loss=2.7876 time=98s params=21,780,040
+
+============================================================
+B2: 9 unique (mid shared), dim=576 | params=27,488,520 | schedule=[0, 1, 2, 3, 4, 5, 3, 4, 5, 6, 7, 8]
+============================================================
+  step    1/500: train_loss=8.7627 val_loss=7.2941 time=1s
+  step  100/500: train_loss=3.9256 val_loss=3.9142 time=23s
+  step  200/500: train_loss=3.4376 val_loss=3.3855 time=47s
+  step  300/500: train_loss=3.1496 val_loss=3.1888 time=70s
+  step  400/500: train_loss=3.0294 val_loss=2.9630 time=93s
+  step  500/500: train_loss=2.8346 val_loss=2.7827 time=116s
+  [B2: 9 unique (mid shared), dim=576] DONE: final_val_loss=2.7827 time=116s params=27,488,520
+
+============================================================
+A1: 6 unique (all shared), dim=512 | params=14,695,984 | schedule=[0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5]
+============================================================
+  step    1/500: train_loss=8.1488 val_loss=7.2099 time=1s
+  step  100/500: train_loss=4.4066 val_loss=4.3796 time=20s
+  step  200/500: train_loss=3.5334 val_loss=3.5263 time=39s
+  step  300/500: train_loss=3.2646 val_loss=3.2923 time=59s
+  step  400/500: train_loss=3.1477 val_loss=3.1022 time=78s
+  step  500/500: train_loss=2.8787 val_loss=2.9013 time=97s
+  [A1: 6 unique (all shared), dim=512] DONE: final_val_loss=2.9013 time=97s params=14,695,984
+
+============================================================
+A2: 6 unique (all shared), dim=640 | params=22,793,648 | schedule=[0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5]
+============================================================
+  step    1/500: train_loss=9.5276 val_loss=7.5146 time=1s
+  step  100/500: train_loss=4.4101 val_loss=4.4284 time=25s
+  step  200/500: train_loss=3.5388 val_loss=3.5085 time=50s
+  step  300/500: train_loss=3.2861 val_loss=3.2650 time=75s
+  step  400/500: train_loss=3.0780 val_loss=3.1229 time=100s
+  step  500/500: train_loss=2.8960 val_loss=2.8899 time=124s
+  [A2: 6 unique (all shared), dim=640] DONE: final_val_loss=2.8899 time=124s params=22,793,648
+
+======================================================================
+FINAL SUMMARY (500 steps)
+======================================================================
+Variant                                           Params Val Loss @100 Val Loss @500
+--------------------------------------------- ---------- ------------ ------------
+BASE: 11 unique, dim=512                      26,502,232       7.2104       2.8079
+B1: 9 unique (mid shared), dim=512            21,780,040       7.1369       2.7876
+B2: 9 unique (mid shared), dim=576            27,488,520       7.2941       2.7827
+A1: 6 unique (all shared), dim=512            14,695,984       7.2099       2.9013
+A2: 6 unique (all shared), dim=640            22,793,648       7.5146       2.8899
+======================================================================
+
+Best: B2: 9 unique (mid shared), dim=576 (val_loss=2.7827)

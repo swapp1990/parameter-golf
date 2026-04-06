@@ -1,0 +1,93 @@
+Loading mixed-quantized model...
+  Artifact: 15.74 MB
+Loading val tokens...
+Documents: 500 (short=0, long=500)
+
+############################################################
+# Quick Tests: Quantization, Softcap, SGD LR, Epochs
+# 500 docs
+############################################################
+
+============================================================
+Test A: GPTQ-lite Quantization (pre-TTT eval)
+============================================================
+  [A0: Mixed quant baseline] DONE: bpb=1.1905 time=7s
+  Loading unquantized model for GPTQ-lite...
+  [A1: Unquantized] DONE: bpb=1.1704 time=4s
+  Applying GPTQ-lite int6...
+  [A2: GPTQ-lite int6] DONE: bpb=1.2476 time=6s
+  Applying GPTQ-lite int8...
+  [A3: GPTQ-lite int8] DONE: bpb=1.1754 time=3s
+
+============================================================
+Test B: Softcap Sweep (pre-TTT eval)
+============================================================
+  [B: softcap=15.0] DONE: bpb=2.0187 time=6s
+  [B: softcap=20.0] DONE: bpb=1.4883 time=5s
+  [B: softcap=25.0] DONE: bpb=1.2466 time=6s
+  [B: softcap=30.0] DONE: bpb=1.1905 time=5s
+
+============================================================
+Test D: SGD Learning Rate Sweep
+============================================================
+  [D: SGD lr=0.001] Doc 100/500: bpb=1.1625 elapsed=12s
+  [D: SGD lr=0.001] Doc 200/500: bpb=1.1630 elapsed=21s
+  [D: SGD lr=0.001] Doc 300/500: bpb=1.1493 elapsed=29s
+  [D: SGD lr=0.001] Doc 400/500: bpb=1.1643 elapsed=38s
+  [D: SGD lr=0.001] Doc 500/500: bpb=1.1681 elapsed=45s
+  [D: SGD lr=0.001] DONE: bpb=1.1681 time=45s
+  [D: SGD lr=0.002] Doc 100/500: bpb=1.1595 elapsed=9s
+  [D: SGD lr=0.002] Doc 200/500: bpb=1.1601 elapsed=18s
+  [D: SGD lr=0.002] Doc 300/500: bpb=1.1465 elapsed=27s
+  [D: SGD lr=0.002] Doc 400/500: bpb=1.1614 elapsed=35s
+  [D: SGD lr=0.002] Doc 500/500: bpb=1.1653 elapsed=42s
+  [D: SGD lr=0.002] DONE: bpb=1.1653 time=42s
+  [D: SGD lr=0.003] Doc 100/500: bpb=1.1586 elapsed=9s
+  [D: SGD lr=0.003] Doc 200/500: bpb=1.1592 elapsed=18s
+  [D: SGD lr=0.003] Doc 300/500: bpb=1.1456 elapsed=26s
+  [D: SGD lr=0.003] Doc 400/500: bpb=1.1605 elapsed=34s
+  [D: SGD lr=0.003] Doc 500/500: bpb=1.1644 elapsed=43s
+  [D: SGD lr=0.003] DONE: bpb=1.1644 time=43s
+  [D: SGD lr=0.005] Doc 100/500: bpb=1.1579 elapsed=9s
+  [D: SGD lr=0.005] Doc 200/500: bpb=1.1585 elapsed=18s
+  [D: SGD lr=0.005] Doc 300/500: bpb=1.1450 elapsed=26s
+  [D: SGD lr=0.005] Doc 400/500: bpb=1.1599 elapsed=34s
+  [D: SGD lr=0.005] Doc 500/500: bpb=1.1637 elapsed=41s
+  [D: SGD lr=0.005] DONE: bpb=1.1637 time=41s
+
+============================================================
+Test E: Multiple TTT Epochs
+============================================================
+  [E: 2 epochs] Doc 100/500: bpb=1.1586 elapsed=16s
+  [E: 2 epochs] Doc 200/500: bpb=1.1593 elapsed=30s
+  [E: 2 epochs] Doc 300/500: bpb=1.1458 elapsed=43s
+  [E: 2 epochs] Doc 400/500: bpb=1.1607 elapsed=58s
+  [E: 2 epochs] Doc 500/500: bpb=1.1645 elapsed=72s
+  [E: 2 epochs] DONE: bpb=1.1645 time=72s
+  [E: 3 epochs] Doc 100/500: bpb=1.1580 elapsed=22s
+  [E: 3 epochs] Doc 200/500: bpb=1.1587 elapsed=43s
+  [E: 3 epochs] Doc 300/500: bpb=1.1453 elapsed=64s
+  [E: 3 epochs] Doc 400/500: bpb=1.1601 elapsed=86s
+  [E: 3 epochs] Doc 500/500: bpb=1.1640 elapsed=105s
+  [E: 3 epochs] DONE: bpb=1.1640 time=105s
+
+======================================================================
+FINAL SUMMARY (500 docs)
+======================================================================
+Test                                               BPB
+--------------------------------------------- --------
+A0: Mixed quant (baseline, no TTT)              1.1905
+A1: Unquantized (no TTT)                        1.1704
+A2: GPTQ-lite int6 (no TTT)                     1.2476
+A3: GPTQ-lite int8 (no TTT)                     1.1754
+B: softcap=15.0 (no TTT)                        2.0187
+B: softcap=20.0 (no TTT)                        1.4883
+B: softcap=25.0 (no TTT)                        1.2466
+B: softcap=30.0 (no TTT)                        1.1905
+D: SGD lr=0.001 (1 epoch)                       1.1681
+D: SGD lr=0.002 (1 epoch)                       1.1653
+D: SGD lr=0.003 (1 epoch)                       1.1644
+D: SGD lr=0.005 (1 epoch)                       1.1637
+E: SGD lr=0.002 (2 epochs)                      1.1645
+E: SGD lr=0.002 (3 epochs)                      1.1640
+======================================================================

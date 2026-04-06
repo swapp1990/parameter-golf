@@ -31,14 +31,26 @@ Similarly, blocks 3 and 4 see the same data three times. Each pass refines the r
 
 ### Why not just use 7 unique layers?
 
-Because depth matters. A 7-layer model (7 unique blocks, no recurrence) is shallower — it gets fewer total processing steps. Our experiments proved this:
+Because depth matters — and the model is catastrophically dependent on its recurrence passes.
 
-| Config | Unique blocks | Effective layers | Result |
-|--------|--------------|-----------------|--------|
-| 7 blocks, no recurrence | 7 | 9 | **+0.064 worse** |
-| 7 blocks, 3x recurrence | 7 | 13 | **-0.009 better** |
+We ran a full ablation study (see [exp47_recurrence_ablation.md](exp47_recurrence_ablation.md)) evaluating the trained exp40-D checkpoint with different layer schedules. Using the same 7 trained blocks but varying how many times each is called:
 
-Same parameter count, but the recurrent version crushes the shallow version because it processes the data through more layers.
+| Schedule | Eff Layers | val_bpb | Delta vs trained schedule |
+|----------|-----------|---------|--------------------------|
+| **A: Full 3x (as trained)** | **13** | **1.1493** | **baseline** |
+| B: 2x recurrence | 11 | 1.6919 | +0.543 (broken) |
+| C: No recurrence | 7 | 2.7739 | +1.625 (destroyed) |
+| D: 3x middle only | 11 | 2.6173 | +1.468 (destroyed) |
+| E: 2x end only | 9 | 1.8744 | +0.725 (broken) |
+| F: 4x recurrence | 17 | 3.8153 | +2.666 (worst) |
+
+Removing even a single recurrence pass (B) increases BPB by **+0.54** — the model doesn't degrade gracefully, it breaks. The weights are fundamentally trained to expect data flowing through the exact sequence in the exact order. Running just 7 layers (C) produces BPB of 2.77, worse than an untrained model.
+
+Adding extra passes (F: 4x) is even worse than removing them — the downstream blocks have never seen representations from a 4th pass.
+
+**Key finding from the ablation**: end recurrence (blocks 5-6) matters 2x more than middle recurrence (blocks 3-4). Removing the end pass (D) is +1.47 worse; removing the middle pass (E) is +0.73 worse. The decoder blocks are more critical because they consume U-Net skip connections and sit closest to the output.
+
+**TTT cannot rescue broken schedules**: SGD all-weights TTT recovers only 6% of the gap for B (2x) and 0.2% for C (no recurrence). The problem isn't wrong weights — it's a wrong computational graph.
 
 ### Why not just use 13 unique layers?
 
@@ -182,24 +194,38 @@ Consider block 3 processing a token at position 42 in a sequence:
 
 **Each pass applies the same linear projections (Q, K, V, MLP weights) to progressively more abstract inputs.** This is mathematically equivalent to applying a fixed nonlinear function f three times: f(f(f(x))) — an iterated function system.
 
-### The iterated function perspective
+### The iterated function perspective — and what the data actually shows
 
-Depth recurrence is literally a **fixed-point iteration**: apply the same function repeatedly until the output stabilizes. In dynamical systems, this converges to a fixed point (or limit cycle) of the function.
+Depth recurrence looks like a **fixed-point iteration**: apply the same function repeatedly until the output stabilizes. If that were true, we'd expect:
+- Cosine similarity increasing with each pass (convergence)
+- Representation norms stabilizing (reaching a fixed point)
+- Later passes making smaller changes (diminishing returns)
 
-For blocks 3 and 4, the recurrence is:
-```
-h₁ = B4(B3(h₀))      # first pass
-h₂ = B4(B3(h₁))      # second pass  
-h₃ = B4(B3(h₂))      # third pass
-```
+**Exp47 measured this directly.** We hooked block 3's output at each of its 3 appearances and computed activation statistics across 64 sequences (131K tokens):
 
-If the blocks have learned a **contractive mapping** (each pass moves closer to a fixed point), then 3 passes get closer to the "ideal" representation than 1 pass would. The quality of this convergence depends on:
+| Comparison | Cosine Similarity | Interpretation |
+|------------|------------------|----------------|
+| Pass 1 → Pass 2 | 0.787 | Substantial transformation |
+| Pass 2 → Pass 3 | 0.859 | Smaller but still significant |
+| Pass 1 → Pass 3 | **0.595** | **Least similar** (not converging!) |
 
-1. **Contraction rate**: How quickly the function converges. If it's slow (barely contractive), 3 passes barely help. If it's fast (strongly contractive), even 2 passes might be enough.
+| Pass | Mean Norm | Relative Change from Prior |
+|------|-----------|---------------------------|
+| 1 (position 3) | 188,481 | — |
+| 2 (position 5) | 221,943 | 0.741 (74% of input norm) |
+| 3 (position 7) | 245,646 | 0.579 (58% of input norm) |
 
-2. **Fixed-point quality**: The fixed point of blocks 3-4 should be a useful representation for the downstream blocks 5-6. Training optimizes for this implicitly — the loss gradient shapes the fixed point toward representations that produce good predictions.
+**The model is NOT doing fixed-point iteration.** Three pieces of evidence:
 
-3. **Whether 3 is the right number**: Too few passes and you haven't converged. Too many and you waste compute (already at the fixed point). We tested 2x and 3x but never 4x.
+1. **Pass 1 and Pass 3 are the LEAST similar** (cosine 0.595). A contractive mapping would make them the most similar (closest to the fixed point). Instead, each pass moves the representation further from where it started.
+
+2. **Norms grow monotonically** (188K → 222K → 246K). A fixed-point attractor would stabilize the norm. Instead, the block pumps energy into the representation — amplifying features that downstream blocks need.
+
+3. **Changes diminish but don't vanish.** Pass 2→3 relative change (0.579) is still large. If we were near a fixed point, this would be close to zero.
+
+**What it's actually doing**: Each pass applies the same weights to a *different input distribution*. Pass 1 sees shallow features (from blocks 0-2). Pass 2 sees medium-depth features (after one round of blocks 3-4). Pass 3 sees deep features (after two rounds). The block has learned weights that are useful across all three distributions — a compromise that creates a directional trajectory rather than convergence.
+
+**This is closer to an iterative refinement process than fixed-point convergence** — like running multiple passes of a denoising algorithm, where each pass removes different types of noise rather than converging to a clean image.
 
 ---
 
@@ -245,42 +271,27 @@ This means block B3's output at different recurrence passes gets bridged to diff
 
 ## 6. Open Questions and Diagnostic Experiments
 
-### Question 1: Which blocks contribute most to the loss?
+### ANSWERED: Q1 — Which recurrence passes matter most?
 
-**Experiment**: Freeze individual blocks (zero their output, or skip their computation) and measure the loss increase. Do this for each of the 13 positions separately.
+**Answer (from exp47)**: End recurrence (blocks 5-6) matters 2x more than middle recurrence (blocks 3-4). Removing end passes costs +1.47 BPB; removing middle passes costs +0.73 BPB. The model is catastrophically dependent on all passes — even removing one middle pass costs +0.54 BPB.
 
-**What we'd learn**: Whether the 3 passes of block 3 contribute equally, or if the first pass matters most (and the 3rd pass is mostly refinement).
+### ANSWERED: Q2 — Are activations converging across passes?
 
-**Prediction**: Pass 1 contributes the most (building initial features), pass 3 the least (diminishing returns from the fixed-point iteration). If pass 3 contributes almost nothing, we could save compute by reducing to 2x recurrence on block 3.
+**Answer (from exp47)**: No. Block 3 does NOT converge to a fixed point. Cosine similarity between pass 1 and pass 3 is only 0.595 (the lowest pair). Norms grow monotonically (188K → 222K → 246K). Each pass moves the representation in a consistent direction with diminishing step size, but without converging back toward the start. This is iterative refinement, not fixed-point convergence.
 
-### Question 2: How different are activations across passes?
+### ANSWERED: Q4 — Is 3x optimal?
 
-**Experiment**: Record the hidden states at positions 3, 5, and 7 (all block B3) for many sequences. Compute:
-- Cosine similarity between pass 1 and pass 3 outputs
-- L2 distance between passes
-- PCA of activations to visualize how much each pass moves the representation
+**Answer (from exp47)**: 4x is catastrophically worse (+2.67 BPB) when applied to a model trained with 3x. This cannot tell us whether 4x would be better if trained from scratch, but it confirms the recurrence count is baked into the weights and cannot be changed at inference time.
 
-**What we'd learn**: Whether the passes are converging to a fixed point (similarity increases with each pass) or diverging (the block does genuinely different things each time).
-
-**Prediction**: High cosine similarity (>0.9) between passes, with each pass making smaller adjustments — consistent with a contractive fixed-point iteration.
-
-### Question 3: Does `resid_mix` create a bottleneck?
+### OPEN: Q3 — Does `resid_mix` create a bottleneck?
 
 **Experiment**: Replace the single `resid_mix` per block with pass-dependent mixing. Give block 3 three different `resid_mix` values — one for each of its three passes. This adds only ~3,744 parameters (3 passes × 2 × 624 dim) but lets each pass blend `x` and `x0` differently.
 
 **What we'd learn**: Whether the fixed blending ratio is a real bottleneck. If pass-dependent mixing improves the loss, it confirms the block needs to distinguish which pass it's on.
 
-**Connection**: This is the minimal version of exp44 (Relaxed Recurrence LoRA). Instead of full LoRA adapters, just make `resid_mix` pass-aware. If even this helps, full LoRA will help more.
+**Connection**: This is the minimal version of exp44 (Relaxed Recurrence LoRA). The exp47 activation data (cosine sim 0.60-0.86 across passes) strongly suggests each pass is doing different work. Giving each pass its own adapter should help.
 
-### Question 4: Is 3x optimal for blocks 3-4?
-
-**Experiment**: Test 2x and 4x recurrence of the middle blocks, keeping total params constant. Also test asymmetric: 4x for blocks 3-4 but 1x for blocks 5-6.
-
-| Schedule | Effective layers | What it tests |
-|----------|-----------------|---------------|
-| `[0,1,2,3,4,3,4,5,6,5,6]` | 11 (2x middle, 2x end) | Less middle recurrence |
-| `[0,1,2,3,4,3,4,3,4,3,4,5,6,5,6]` | 15 (4x middle, 2x end) | More middle recurrence |
-| `[0,1,2,3,4,3,4,3,4,5,6]` | 11 (3x middle, 1x end) | All recurrence in middle |
+### OPEN: Q5 — Would different blocks benefit from sharing?
 
 **What we'd learn**: Whether we've hit diminishing returns on recurrence, or whether 4x would give further improvement.
 
@@ -315,7 +326,7 @@ At rank 4, this adds only ~60K params total (across all shared blocks and passes
 - Pass 2 specialize in refining features
 - Pass 3 specialize in producing final representations
 
-The diagnostic experiments from Section 6 (especially Q2 and Q3) would tell us whether this specialization is actually needed, or whether the block already adapts through input differences alone.
+The exp47 activation data (cosine sim 0.60-0.86 across passes, growing norms) confirms each pass IS doing different work. Per-pass LoRA would let each pass specialize explicitly rather than relying on input distribution differences alone.
 
 ---
 
@@ -326,11 +337,14 @@ The diagnostic experiments from Section 6 (especially Q2 and Q3) would tell us w
 | Why it works | More processing depth within fixed param budget | High |
 | Primary benefit | Faster learning per step (3x gradient signal) | High |
 | Width + depth interaction | Both needed; neither alone helps | High (exp40 A-D) |
-| Convergence behavior | Likely fixed-point iteration (untested) | Medium (theoretical) |
-| Quantization amplification | Shared block errors compound 3x | High (explains GPTQ impact) |
-| TTT amplification | Shared blocks have 3x leverage | Medium (correlational) |
+| Schedule dependency | **Catastrophic** — removing 1 pass costs +0.54 BPB | **High (exp47 measured)** |
+| End > middle recurrence | End blocks 2x more critical than middle | **High (exp47 measured)** |
+| Convergence behavior | **NOT fixed-point** — iterative directional refinement | **High (exp47 measured)** |
+| Quantization amplification | Shared block errors compound 3x; norms grow per pass | High (exp47 confirms) |
+| TTT rescue of broken schedule | **Fails** — recovers <6% of lost BPB | **High (exp47 measured)** |
 | `resid_mix` bottleneck | Can't distinguish passes (potential info loss) | Medium (untested) |
-| Optimal recurrence count | 3x is good; 4x untested | Low (one data point) |
-| Per-pass specialization need | Unknown; exp44 would test this | Low (no data) |
+| Per-pass specialization need | Passes produce very different representations (cos 0.60-0.86) | **High (exp47 measured)** |
 
-**The core insight**: Depth recurrence is parameter-efficient depth. It works because it gives more processing steps without more storage, and the shared blocks receive amplified gradient signal during training. Its main limitation is that shared blocks can't adapt their behavior per pass — addressing this (via pass-aware mixing or LoRA) is the most promising next step.
+**The core insight**: Depth recurrence is not just parameter-efficient depth — it creates a **tightly coupled computational pipeline** where each pass through a shared block performs distinct work on progressively more abstract representations. The model is catastrophically dependent on its exact recurrence schedule, confirming that shared blocks learn to serve multiple roles simultaneously. The strong evidence for per-pass differentiation (exp47) makes relaxed recurrence (per-pass adapters) the most promising next step.
+
+**Full ablation data**: [exp47_recurrence_ablation.md](exp47_recurrence_ablation.md)

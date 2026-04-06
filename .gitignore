@@ -28,4 +28,4 @@ dashboard/analysis_*.json
 dashboard/analysis_*.md
 dashboard/doc_isolated_eval_results.json
 dashboard/document_analysis_results.json
-dashboard/bits_budget_results.json
+dashboard/bits_budget_results.jsondashboard/checkpoints/

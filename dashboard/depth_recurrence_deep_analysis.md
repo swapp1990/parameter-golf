@@ -182,17 +182,72 @@ On block 3's third pass (position 7), `x` is deep — it's been through B0, B1, 
 
 This is a **real information bottleneck** — the block can't distinguish which pass it's executing.
 
-### What the block "sees" each pass
+### What the block "sees" each pass — and what it does to the loss
 
-Consider block 3 processing a token at position 42 in a sequence:
+We can go beyond theory and measure this directly. **Exp47b probed the loss at every position in the schedule** — at each point, project the hidden state to logits and measure how good the predictions are. This reveals how each layer contributes to prediction quality:
 
-**Pass 1 (position 3 in schedule)**: The input `x` contains information from blocks 0-2. The attention can see all tokens 0-41, but the KV cache only reflects 3 layers of processing. The representation is still "raw" — mostly positional and token-identity features.
+```
+Position  Block        Loss     Delta     Role
+────────────────────────────────────────────────────────────
+0         B0           7.858    —         Almost random predictions
+1         B1           6.494    -1.364    ▼▼▼▼ Biggest single-layer drop
+2         B2           6.366    -0.128    ▼
+3         B3-pass1     6.071    -0.295    ▼▼ First pass helps predictions
+4         B4-pass1     5.876    -0.195    ▼▼
+5         B3-pass2     5.936    +0.060    ▲ LOSS GOES UP
+6         B4-pass2     6.003    +0.066    ▲ LOSS GOES UP
+7         B3-pass3     6.242    +0.240    ▲▲ LOSS GOES UP MORE
+8         B4-pass3     5.672    -0.570    ▼▼▼▼ B4 pass 3 recovers everything
+9         B5-pass1     5.627    -0.046    ▼
+10        B6-pass1     4.361    -1.266    ▼▼▼▼ Second biggest drop
+11        B5-pass2     4.381    +0.020    ~ flat
+12        B6-pass2     1.926    -2.455    ▼▼▼▼▼ LARGEST — 41% of total reduction
+```
 
-**Pass 2 (position 5 in schedule)**: The input `x` now reflects blocks 0-2-3-4. It has 5 layers of processing. Attention now operates on richer representations. Token 42 "knows" more about its neighbors' semantics, not just their identities.
+**The critical finding: middle recurrence passes (positions 5-7) make predictions WORSE, not better.** If you projected to logits after block 3's second pass, the loss is higher than after its first pass. After block 3's third pass, it's higher still.
 
-**Pass 3 (position 7 in schedule)**: The input `x` reflects blocks 0-2-3-4-3-4. After 7 layers, the representations encode abstract features — syntactic roles, semantic relationships, longer-range dependencies. This is where the highest-level reasoning happens.
+This doesn't mean these passes are useless. It means they're **transforming representations for downstream layers, not improving predictions directly.** Like an assembly line: the middle station might make the product look worse (disassembling components) because it's rearranging parts for the final assembly.
 
-**Each pass applies the same linear projections (Q, K, V, MLP weights) to progressively more abstract inputs.** This is mathematically equivalent to applying a fixed nonlinear function f three times: f(f(f(x))) — an iterated function system.
+The proof: block 4 pass 3 (position 8) immediately follows with **the biggest improvement in the recurrence section** (-0.570), and the final layer (B6 pass 2) does **41% of all loss reduction** (-2.455). The middle passes build the features that make these final layers effective.
+
+### Block 3 and Block 4 play complementary roles
+
+| Pass | Block 3 (delta) | Block 4 (delta) | Pattern |
+|------|----------------|----------------|---------|
+| 1 | -0.295 (reduces loss) | -0.195 (reduces loss) | Both help on first pass |
+| 2 | +0.060 (reorganizes) | +0.066 (reorganizes) | Both sacrifice predictions for features |
+| 3 | +0.240 (destabilizes) | **-0.570 (reconstructs)** | B3 tears down, B4 builds back up |
+
+Block 3 appears to destabilize representations — making them less directly useful for prediction but richer in the features that block 4 and the decoder need. Block 4 then compresses these features into a form the decoder can use. They work as a **deconstruct/reconstruct pair**.
+
+### Where predictions actually happen
+
+The model builds confidence in two sharp jumps, not gradually:
+
+```
+Position  Block        Top-1 Prob   What's happening
+────────────────────────────────────────────────────
+0-8       B0 to B4p3   0.3-0.7%    Near-uniform — no opinion yet
+9         B5-pass1     0.4%        Still no opinion
+10        B6-pass1     5.8%        ▼ First real confidence jump
+11        B5-pass2     6.1%        Holds
+12        B6-pass2     53.0%       ▼▼▼ Commits to prediction
+```
+
+The entire recurrence section (positions 3-8) doesn't change confidence at all. Block 6 is where features get converted into predictions — first tentatively (5.8% top-1), then decisively (53% top-1).
+
+### Which tokens benefit from recurrence?
+
+We split tokens by difficulty (based on final loss) and tracked how they evolve:
+
+| Difficulty | After B3-pass1 | After B3-pass3 | Change | Interpretation |
+|-----------|---------------|---------------|--------|----------------|
+| Easy (0-25%) | 5.46 | 6.23 | **+0.76 worse** | Recurrence hurts easy tokens! |
+| Medium (25-50%) | 5.86 | 5.69 | -0.17 better | Medium tokens benefit most |
+| Hard (50-75%) | 6.07 | 5.89 | -0.18 better | Hard tokens also benefit |
+| Hardest (90-100%) | 7.74 | 8.47 | **+0.73 worse** | Hardest tokens also hurt |
+
+The model **sacrifices easy and very-hard tokens during recurrence** to improve medium and hard tokens. This makes sense: easy tokens are already predictable (final loss 0.01), so the model doesn't need recurrence for them. Very hard tokens are unpredictable regardless (final loss 6.37), so the model gives up on them. Recurrence focuses its effort on the tokens where additional processing actually helps — the middle difficulty range.
 
 ### The iterated function perspective — and what the data actually shows
 
@@ -233,19 +288,15 @@ Depth recurrence looks like a **fixed-point iteration**: apply the same function
 
 ### Depth recurrence × GPTQ
 
-Shared blocks are quantized once. Block 3's weights are stored as int5/int6 integers. But block 3's quantization error appears at 3 positions in the forward pass:
+Two effects compound to make quantization especially damaging in recurrent models:
 
-```
-Error at position 3:  ε₃
-Error at position 5:  ε₃ + amplification from position 3's error
-Error at position 7:  ε₃ + amplification from positions 3 and 5's errors
-```
+**1. Shared block errors appear multiple times.** Block 3's quantization error shows up at 3 positions in the forward pass. And because norms grow across passes (188K → 222K → 246K, from exp47b), the same rounding error gets amplified on each subsequent pass.
 
-Quantization errors in shared blocks are **multiplicatively amplified** by the number of recurrences. A 3% weight error in block 3 doesn't cause 3% output error — it causes roughly 3% × 3 passes ≈ 9% cumulative error (with some compensation from residual connections).
+**2. Block 6 does 63% of loss reduction — and it's quantized like every other block.** The loss probing data (exp47b) shows B6 is responsible for 41% (pass 2) + 22% (pass 1) = 63% of total loss reduction. Yet we quantize B6's attention weights at int6, the same as every other block. Quantization errors in B6 directly corrupt the final prediction more than errors in any other block.
 
-This is why GPTQ was so effective (-0.009 BPB): it specifically reduces rounding errors in the weights that matter most. Since blocks 3-4 are used 3x, reducing their quantization error has 3x the impact of reducing a unique block's error.
+This explains why GPTQ was so effective (-0.009 BPB): it uses Hessian information to minimize output-level error, which naturally prioritizes the weights that matter most for predictions — and those weights are concentrated in B6 and the recurrent blocks.
 
-**Prediction**: Per-layer GPTQ sensitivity analysis would show blocks 3 and 4 have the highest impact when optimized, because their errors compound the most.
+**Actionable**: Per-block bit allocation could help. Giving B6 int8 (or even keeping it in float16) while using int5 for middle blocks would preferentially protect the most critical layer. This trades ~100KB of artifact size for potentially significant BPB improvement.
 
 ### Depth recurrence × SGD TTT
 
@@ -271,9 +322,15 @@ This means block B3's output at different recurrence passes gets bridged to diff
 
 ## 6. Open Questions and Diagnostic Experiments
 
-### ANSWERED: Q1 — Which recurrence passes matter most?
+### ANSWERED: Q1 — How do recurrence passes contribute to loss reduction?
 
-**Answer (from exp47)**: End recurrence (blocks 5-6) matters 2x more than middle recurrence (blocks 3-4). Removing end passes costs +1.47 BPB; removing middle passes costs +0.73 BPB. The model is catastrophically dependent on all passes — even removing one middle pass costs +0.54 BPB.
+**Answer (from exp47b loss probing)**: Middle recurrence passes (B3/B4 passes 2-3) don't reduce probed loss — they **increase** it. They build abstract features that only become useful when the decoder (B6) processes them. The actual loss reduction is concentrated:
+- B1 (early): -1.36 (25%)
+- B6 pass 1: -1.27 (22%)
+- B6 pass 2: -2.46 (41%)
+- B4 pass 3: -0.57 (10%, the "exit" from recurrence)
+
+Block 3 destabilizes representations while block 4 reconstructs them — they work as a pair.
 
 ### ANSWERED: Q2 — Are activations converging across passes?
 
@@ -282,6 +339,10 @@ This means block B3's output at different recurrence passes gets bridged to diff
 ### ANSWERED: Q4 — Is 3x optimal?
 
 **Answer (from exp47)**: 4x is catastrophically worse (+2.67 BPB) when applied to a model trained with 3x. This cannot tell us whether 4x would be better if trained from scratch, but it confirms the recurrence count is baked into the weights and cannot be changed at inference time.
+
+### ANSWERED: Q6 — Which tokens benefit from recurrence?
+
+**Answer (from exp47b)**: Medium-difficulty tokens benefit most. Easy tokens (final loss ~0.01) get worse through recurrence — the model sacrifices their intermediate representations because they'll be correctly predicted regardless. The hardest tokens (final loss ~6.4) also get worse — the model gives up on them. Recurrence focuses effort on the middle difficulty range where extra processing actually helps.
 
 ### OPEN: Q3 — Does `resid_mix` create a bottleneck?
 
@@ -322,11 +383,11 @@ Pass 3: output = Block3(x) + LoRA_3_pass3(x)    (32 params × rank)
 ```
 
 At rank 4, this adds only ~60K params total (across all shared blocks and passes) — well within our 16MB budget. But it lets:
-- Pass 1 specialize in building initial features
-- Pass 2 specialize in refining features
-- Pass 3 specialize in producing final representations
+- Pass 1 specialize in reducing loss directly (it's the only pass that does)
+- Pass 2 specialize in feature deconstruction for the decoder
+- Pass 3 specialize in producing features that B4 pass 3 can reconstruct from
 
-The exp47 activation data (cosine sim 0.60-0.86 across passes, growing norms) confirms each pass IS doing different work. Per-pass LoRA would let each pass specialize explicitly rather than relying on input distribution differences alone.
+The exp47b loss probing data makes the strongest case for this: passes 1, 2, and 3 of block 3 have **qualitatively different roles** (loss-reducing vs feature-building vs destabilizing). A single set of weights must compromise across all three. Per-pass LoRA resolves this compromise by letting each pass adapt the shared weights to its specific role.
 
 ---
 
@@ -337,14 +398,20 @@ The exp47 activation data (cosine sim 0.60-0.86 across passes, growing norms) co
 | Why it works | More processing depth within fixed param budget | High |
 | Primary benefit | Faster learning per step (3x gradient signal) | High |
 | Width + depth interaction | Both needed; neither alone helps | High (exp40 A-D) |
-| Schedule dependency | **Catastrophic** — removing 1 pass costs +0.54 BPB | **High (exp47 measured)** |
-| End > middle recurrence | End blocks 2x more critical than middle | **High (exp47 measured)** |
-| Convergence behavior | **NOT fixed-point** — iterative directional refinement | **High (exp47 measured)** |
-| Quantization amplification | Shared block errors compound 3x; norms grow per pass | High (exp47 confirms) |
-| TTT rescue of broken schedule | **Fails** — recovers <6% of lost BPB | **High (exp47 measured)** |
+| Middle passes increase probed loss | Passes 2-3 build features for decoder, don't reduce loss directly | **High (exp47b measured)** |
+| B6 does 63% of loss reduction | Final layer is where predictions happen (41% + 22%) | **High (exp47b measured)** |
+| B3 destabilizes, B4 reconstructs | Complementary roles within recurrence pair | **High (exp47b measured)** |
+| Token difficulty triage | Recurrence helps medium tokens, sacrifices easy and hardest | **High (exp47b measured)** |
+| Confidence builds in 2 jumps | At B6-pass1 (5.8%) and B6-pass2 (53%), not during recurrence | **High (exp47b measured)** |
+| Convergence behavior | NOT fixed-point — iterative directional refinement | **High (exp47 measured)** |
+| Quantization priority | B6 should get higher precision than other blocks | **High (exp47b implies)** |
 | `resid_mix` bottleneck | Can't distinguish passes (potential info loss) | Medium (untested) |
-| Per-pass specialization need | Passes produce very different representations (cos 0.60-0.86) | **High (exp47 measured)** |
+| Per-pass specialization need | Passes have qualitatively different roles (loss-reducing vs feature-building) | **High (exp47b measured)** |
 
-**The core insight**: Depth recurrence is not just parameter-efficient depth — it creates a **tightly coupled computational pipeline** where each pass through a shared block performs distinct work on progressively more abstract representations. The model is catastrophically dependent on its exact recurrence schedule, confirming that shared blocks learn to serve multiple roles simultaneously. The strong evidence for per-pass differentiation (exp47) makes relaxed recurrence (per-pass adapters) the most promising next step.
+**The core insight**: Depth recurrence creates a **pipeline with division of labor**. Early blocks reduce loss. Middle recurrence passes sacrifice prediction quality to build abstract features. The final decoder layer (B6) converts those features into predictions, doing 41% of all loss reduction in a single layer. This means:
 
-**Full ablation data**: [exp47_recurrence_ablation.md](exp47_recurrence_ablation.md)
+1. **The recurrence section is a feature factory**, not a prediction improver. Per-pass adapters (exp44) should help because each pass has a distinct role.
+2. **B6 is the most important block to protect** during quantization — errors there directly corrupt 63% of prediction capability.
+3. **Medium-difficulty tokens are the recurrence beneficiaries** — the model strategically allocates recurrence effort to tokens where extra processing helps.
+
+**Detailed diagnostic data**: [exp47_recurrence_ablation.md](exp47_recurrence_ablation.md)

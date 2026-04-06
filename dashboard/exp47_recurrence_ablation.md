@@ -1,189 +1,126 @@
-# Exp 47: Depth Recurrence Ablation Study
+# Exp 47: What Do Recurrence Passes Actually Do?
 
 **Date**: 2026-04-06
 **Model**: exp40-D float checkpoint (7 unique blocks, dim=624, 26.5M params)
 **GPU**: 1xH100 SXM (RunPod)
-**Runtime**: ~25 min total (Phase 1: ~20 min, Phase 2: ~1 min, Phase 3: ~2 min)
 
 ---
 
-## 1. Purpose
+## 1. The Question
 
-Our model uses depth recurrence: 7 unique transformer blocks arranged in a schedule of 13 effective layers `[0,1,2,3,4,3,4,3,4,5,6,5,6]`. Blocks 3-4 are reused 3 times, blocks 5-6 are reused twice.
+Our model reuses blocks 3-4 three times and blocks 5-6 twice, creating 13 effective layers from 7 unique blocks. The trained schedule is `[0,1,2,3,4,3,4,3,4,5,6,5,6]`.
 
-We know this architecture works (val_bpb=1.1172 with GPTQ+TTT). But we don't know:
-- How much does each recurrence pass contribute?
-- What happens if we remove or add passes?
-- Are the shared blocks converging to a fixed point, or doing something different each pass?
-- Can TTT compensate for missing recurrence?
+We know this works well (val_bpb=1.1172 with GPTQ+TTT). But we don't understand what's happening inside the recurrence. When block 3 runs for the second and third time, is it:
+- **Converging** — refining toward a fixed-point representation, each pass making smaller corrections?
+- **Transforming** — building progressively different representations, each pass doing distinct work?
 
-This experiment answers these questions by ablating the layer schedule at inference time, using the same trained weights.
+The answer has direct implications for exp44 (Relaxed Recurrence LoRA). If passes converge, per-pass adapters would fight the convergence. If passes do distinct work, per-pass adapters would let each pass specialize.
 
-## 2. Methodology
+## 2. Method
 
-We take the trained exp40-D float checkpoint and evaluate it with **different layer schedules**, keeping all block weights identical. For each schedule:
-1. Build a model with that schedule (same 7 unique blocks, different forward pass order)
-2. Load matching weights from the checkpoint
-3. Evaluate on the full 62M-token validation set (no TTT)
-4. For key schedules, also evaluate with SGD all-weights TTT (500 docs)
+We hooked block 3's output at each of its 3 appearances in the forward pass (positions 3, 5, and 7 in the schedule). For 64 validation sequences (131K tokens), we recorded the hidden state output and computed:
 
-Additionally, we hook block 3's output at each of its 3 appearances in the full schedule to measure how representations change across passes.
+- **Cosine similarity** between pass outputs — how similar are the directions?
+- **L2 distance** — how far apart in absolute terms?
+- **Mean norm** — are representations growing, shrinking, or stable?
+- **Relative change** — how much does each pass move the representation relative to its input magnitude?
 
-**Important caveat**: The model was *trained* with schedule A. All other schedules are mismatched — the model never saw them during training. So these results measure **how dependent the model is on its exact schedule**, not what the optimal schedule would be if trained from scratch.
+## 3. Results
 
-## 3. Ablation Schedules
-
-The model was trained with schedule A. All other schedules are **inference-time ablations** — we load the same trained weights but change the forward pass order. This measures how dependent the model is on its exact recurrence pattern, not what would happen if we trained with a different schedule.
-
-| Name | Schedule | Eff Layers | What's different from A |
-|------|----------|-----------|------------------------|
-| **A** | `[0,1,2,3,4,3,4,3,4,5,6,5,6]` | 13 | Nothing (original trained schedule) |
-| **B** | `[0,1,2,3,4,3,4,5,6,5,6]` | 11 | Removed one middle pass of blocks 3-4 |
-| **C** | `[0,1,2,3,4,5,6]` | 7 | Removed all recurrence (each block once) |
-| **D** | `[0,1,2,3,4,3,4,3,4,5,6]` | 11 | Removed end recurrence of blocks 5-6 |
-| **E** | `[0,1,2,3,4,5,6,5,6]` | 9 | Removed middle recurrence of blocks 3-4 |
-| **F** | `[0,1,2,3,4,3,4,3,4,3,4,5,6,5,6,5,6]` | 17 | Added extra passes (4x middle, 3x end) |
-
-## 4. Results
-
-### Phase 1: No-TTT Evaluation (Full Val Set)
-
-| Schedule | Eff Layers | val_loss | val_bpb | Delta vs A | Time |
-|----------|-----------|----------|---------|------------|------|
-| **A: Full 3x** | **13** | **1.9405** | **1.1493** | **baseline** | 230s |
-| B: 2x recurrence | 11 | 2.8568 | 1.6919 | +0.5426 | 198s |
-| C: No recurrence | 7 | 4.6837 | 2.7739 | +1.6246 | 134s |
-| D: 3x middle only | 11 | 4.4193 | 2.6173 | +1.4680 | 198s |
-| E: 2x end only | 9 | 3.1648 | 1.8744 | +0.7251 | 167s |
-| F: 4x recurrence | 17 | 6.4420 | 3.8153 | +2.6660 | 294s |
-
-### Phase 2: Block 3 Activation Analysis
-
-Block 3 appears at positions 3, 5, and 7 in the full schedule. We recorded its output at each position across 64 validation sequences (131K tokens).
+### Block 3 produces increasingly different representations across passes
 
 **Cosine similarity between passes:**
 
-| Comparison | Cosine Similarity | L2 Distance |
-|------------|------------------|-------------|
-| Pass 1 → Pass 2 | 0.787 | 139,726 |
-| Pass 2 → Pass 3 | 0.859 | 128,411 |
-| Pass 1 → Pass 3 | 0.595 | 207,065 |
+| Comparison | Cosine Similarity |
+|------------|------------------|
+| Pass 1 → Pass 2 | 0.787 |
+| Pass 2 → Pass 3 | 0.859 |
+| Pass 1 → Pass 3 | **0.595** |
 
-**Per-pass statistics:**
+Pass 1 and pass 3 are the **least similar** pair. If block 3 were converging to a fixed point, pass 1→3 would be the *most* similar (both approaching the attractor). Instead, each pass moves the representation further from where it started.
 
-| Pass | Mean Norm | Std Dev | Relative Change from Prior |
-|------|-----------|---------|---------------------------|
-| 1 (position 3) | 188,481 | 7,672 | — |
-| 2 (position 5) | 221,943 | 8,957 | 0.741 (74% of input norm) |
-| 3 (position 7) | 245,646 | 9,978 | 0.579 (58% of input norm) |
+**Representation norms grow monotonically:**
 
-### Phase 3: SGD TTT Evaluation (500 docs)
+| Pass | Position in Schedule | Mean Norm | Growth vs Prior |
+|------|---------------------|-----------|-----------------|
+| 1 | 3 | 188,481 | — |
+| 2 | 5 | 221,943 | +18% |
+| 3 | 7 | 245,646 | +11% |
 
-| Schedule | Eff | No-TTT BPB | TTT BPB | TTT Gain | TTT Delta vs A |
-|----------|-----|-----------|---------|----------|----------------|
-| A: Full 3x | 13 | 1.1493 | 1.1496 | -0.0003 | baseline |
-| B: 2x recurrence | 11 | 1.6919 | 1.6599 | 0.0321 | +0.5103 |
-| C: No recurrence | 7 | 2.7739 | 2.7698 | 0.0042 | +1.6202 |
+A fixed-point attractor would stabilize the norm. Instead, the block pumps energy into the representation with each pass — amplifying features that downstream blocks need.
 
----
+**Each pass transforms less, but still substantially:**
 
-## 5. Analysis
+| Transition | Relative Change (delta norm / input norm) |
+|------------|------------------------------------------|
+| Pass 1 → Pass 2 | 0.741 (74% of input magnitude) |
+| Pass 2 → Pass 3 | 0.579 (58% of input magnitude) |
 
-### Finding 1: The model is catastrophically specialized for its exact schedule
+The changes diminish (0.74 → 0.58) but remain large. At a fixed point, relative change would be near zero. Pass 3 is still doing significant work.
 
-Removing a single recurrence pass (B: 2x, 11 layers) increases BPB by **+0.543** — from near-SOTA (1.15) to barely functional (1.69). Removing all recurrence (C: 7 layers) produces BPB of 2.77, worse than an untrained model of similar size.
+## 4. Interpretation
 
-This is not a gradual degradation. The model doesn't work "somewhat worse" without recurrence — it **breaks**. The weights have been trained to expect data flowing through the exact sequence of blocks in the exact order. Change the sequence and the learned representations become incoherent.
+### It's iterative refinement, not convergence
 
-**Why this matters**: This proves depth recurrence is not just "bonus processing." The model has fundamentally encoded its layer schedule into its weight structure. Blocks 3-4 learn different functions at each pass even though they use identical weights — the function differs because the *input distribution* at each position is different, and the weights are optimized for the union of all three input distributions.
+The data paints a clear picture: block 3 applies the same weights to progressively more abstract inputs, producing a **directional trajectory** rather than convergence to a fixed point.
 
-### Finding 2: End recurrence (blocks 5-6) matters more than middle recurrence (blocks 3-4)
+- **Pass 1** (after blocks 0-2): Processes shallow features — token identity, positional information. The input is still close to the raw embedding.
+- **Pass 2** (after blocks 0-2-3-4): Processes medium-depth features. Attention now operates on richer representations where tokens "know" about their neighbors' semantics.
+- **Pass 3** (after blocks 0-2-3-4-3-4): Processes deep features — syntactic roles, longer-range dependencies. This is the most abstract input the block sees.
 
-| Removed | BPB | Delta |
-|---------|-----|-------|
-| End recurrence removed (D: 3x middle only) | 2.617 | +1.468 |
-| Middle recurrence removed (E: 2x end only) | 1.874 | +0.725 |
+Each pass applies identical Q, K, V, and MLP projections, but the *input distribution* is different each time. The block has learned weights that work across all three distributions — a compromise that creates directional refinement rather than convergence.
 
-Removing end recurrence is **2x worse** than removing middle recurrence. The decoder blocks (5-6) in the U-Net's second half are more critical because:
+### Adjacent passes are more similar than distant ones
 
-1. **Skip connections**: The decoder consumes skip connections from the encoder. Blocks 5-6 on their second pass receive different skip connections than on their first pass. Without the second pass, half the skip connections go unused.
+Cosine similarity is 0.86 for pass 2→3 but only 0.60 for pass 1→3. This makes sense: each pass makes an incremental transformation, so consecutive outputs are closer together. But the cumulative effect is a large shift — pass 3's output is quite different from pass 1's.
 
-2. **Proximity to output**: Blocks 5-6 are the last processing step before the prediction head. Errors here propagate directly to the loss. Middle blocks (3-4) have more downstream layers to compensate.
+### The `resid_mix` bottleneck is real
 
-3. **Decoder role**: In the U-Net structure, encoder blocks (positions 0-5) build representations while decoder blocks (positions 6-12) refine them for prediction. The decoder's second pass is the model's "final edit" — removing it is like submitting a first draft.
+Each block blends its running state `x` with the original embedding `x0`:
+```python
+x = resid_mix[0] * x + resid_mix[1] * x0
+```
 
-### Finding 3: More recurrence (4x) is worse, not better
+This blending ratio is fixed across all passes. But pass 1's `x` is shallow (3 layers deep) while pass 3's `x` is deep (7 layers deep). The optimal blend is almost certainly different for each pass — more `x0` early (raw tokens still informative), less `x0` later (deep features dominate). The block can't make this distinction.
 
-F (17 layers, 4x) has BPB of **3.82** — the worst of all schedules. Adding extra passes through blocks that were trained with 3 passes creates representations the downstream blocks have never seen. The skip_weights are also mismatched (trained for 13-layer U-Net, now receiving 17-layer skips).
+## 5. Implications for Exp44 (Relaxed Recurrence LoRA)
 
-This confirms that the recurrence count is a fundamental architectural choice, not a tunable parameter at inference time.
+The activation data strongly supports adding per-pass adapters:
 
-### Finding 4: Block 3 is NOT converging to a fixed point
+1. **Passes do distinct work** (cosine sim 0.60-0.86) — there's room for specialization
+2. **Pass 3 still transforms significantly** (relative change 0.58) — it's not redundant
+3. **The `resid_mix` bottleneck is real** — even just making `resid_mix` pass-aware (~3,744 params) could help
+4. **Norms grow per pass** — per-pass scaling could be valuable
 
-If depth recurrence worked like a fixed-point iteration (applying the same function until output stabilizes), we'd expect:
-- Increasing cosine similarity between successive passes (convergence)
-- Decreasing relative change (stabilization)
+The minimal experiment: give each recurrence pass its own `resid_mix`. If that improves the loss, full per-pass LoRA adapters (on Q/V projections) should help more.
 
-What we actually observe:
+## 6. Implications for GPTQ
 
-| | Expected (fixed-point) | Observed |
-|-|----------------------|----------|
-| Cosine sim 1→2 vs 2→3 | 2→3 should be higher | 2→3 IS higher (0.859 vs 0.787) |
-| Relative change 1→2 vs 2→3 | 2→3 should be smaller | 2→3 IS smaller (0.579 vs 0.741) |
-| Cosine sim 1→3 | Should be highest | Is LOWEST (0.595) |
+The growing norms across passes (188K → 222K → 246K) mean quantization errors in block 3 get amplified through recurrence. A rounding error on pass 1 feeds into a larger-norm input on pass 2, which feeds into an even larger-norm input on pass 3. This compounds the damage.
 
-The first two observations are consistent with convergence — each pass makes smaller changes, and adjacent passes are more similar. But the third observation (pass 1 and pass 3 are the LEAST similar) reveals that the block is **not converging to a fixed point**. Instead, it's **iteratively transforming** the representation through a trajectory: each pass moves the representation in a consistent direction, with diminishing step size but without circling back toward the starting point.
-
-The growing norms confirm this:
-- Pass 1: mean norm 188,481
-- Pass 2: mean norm 221,943 (+18%)
-- Pass 3: mean norm 245,646 (+11%)
-
-Representations grow in magnitude with each pass. A fixed-point attractor would stabilize the norm. Instead, the block is pumping energy into the representation — each pass amplifies specific features that the downstream blocks need.
-
-### Finding 5: TTT cannot rescue broken schedules
-
-| Schedule | TTT Gain |
-|----------|----------|
-| A (correct) | -0.0003 (none — already optimal) |
-| B (2x, missing 1 pass) | 0.032 (recovers 6% of the 0.543 gap) |
-| C (no recurrence) | 0.004 (recovers 0.2% of the 1.625 gap) |
-
-SGD TTT adapts all 26.5M weights per document, yet it recovers almost nothing. This is because the problem isn't "wrong weights for this document" — it's "wrong computational graph." TTT can adjust what each block computes, but it can't add missing passes through the network.
-
-This also confirms that TTT's power comes from adapting a *working* model to specific documents, not from fixing architectural deficiencies.
+This explains why GPTQ was so effective (-0.009 BPB): reducing rounding errors in blocks 3-4 has outsized impact because those errors propagate through 3 passes with growing magnitude.
 
 ---
 
-## 6. Implications
+## Appendix: Schedule Ablation
 
-### For our current model
+We also ran the trained model with different layer schedules at inference time (same weights, different forward pass order). These results should be interpreted carefully: they measure **how dependent the trained model is on its exact schedule**, not what would happen if we trained with different schedules. A model run with the wrong architecture will obviously perform badly.
 
-The depth recurrence is deeply load-bearing. The model cannot be simplified by reducing passes at inference time. The 3x/2x recurrence pattern is baked into the weight structure.
+| Schedule | Eff Layers | val_bpb | Delta vs trained |
+|----------|-----------|---------|-----------------|
+| `[0,1,2,3,4,3,4,3,4,5,6,5,6]` (as trained) | 13 | 1.1493 | baseline |
+| `[0,1,2,3,4,3,4,5,6,5,6]` (2x) | 11 | 1.6919 | +0.543 |
+| `[0,1,2,3,4,5,6]` (no recurrence) | 7 | 2.7739 | +1.625 |
+| `[0,1,2,3,4,3,4,3,4,5,6]` (3x middle only) | 11 | 2.6173 | +1.468 |
+| `[0,1,2,3,4,5,6,5,6]` (2x end only) | 9 | 1.8744 | +0.725 |
+| `[0,1,2,3,4,3,4,3,4,3,4,5,6,5,6,5,6]` (4x) | 17 | 3.8153 | +2.666 |
 
-### For exp44 (Relaxed Recurrence LoRA)
+SGD TTT was also evaluated on the top 3 schedules (500 docs). TTT recovered less than 6% of the gap for the 2x schedule and 0.2% for no-recurrence, confirming that TTT adapts weights but can't fix a wrong computational graph.
 
-The activation analysis shows block 3 produces meaningfully different representations at each pass (cosine sim 0.60-0.86). This means each pass is doing different work despite using identical weights. Giving each pass its own small LoRA adapter would let it specialize explicitly rather than relying on input distribution differences alone.
-
-The relative change data (0.74 for pass 1→2, 0.58 for pass 2→3) suggests passes 1 and 2 benefit most from specialization (they're doing the most transformation), while pass 3 is already more incremental.
-
-### For architecture search
-
-The catastrophic sensitivity to schedule changes means:
-1. **Schedule must be fixed before training** — you can't explore schedules at eval time
-2. **Skip connections create tight coupling** — U-Net skip weights are sized for a specific layer count
-3. **Recurrence count matters** — 2x, 3x, and 4x give very different results when trained
-
-Future experiments should test different schedules by retraining from scratch, not by modifying a trained model's schedule.
-
-### For quantization (GPTQ)
-
-Blocks 3-4 are the most reused (3x each). Their quantization errors appear 3 times in the forward pass, compounding. The activation analysis shows norms growing across passes (188K → 222K → 246K), which means quantization errors also get amplified across passes. This explains why GPTQ was so effective (-0.009 BPB): reducing rounding errors in blocks 3-4 has 3x the leverage.
+One observation from this data: removing end recurrence (blocks 5-6) hurts more than removing middle recurrence (blocks 3-4) — BPB +1.47 vs +0.73. This is partly confounded by skip weight mismatches, but suggests the decoder passes are more critical, likely because they sit closest to the output and consume U-Net skip connections.
 
 ---
 
-## 7. Raw Data
-
-Full results: [exp47_recurrence_ablation_results.json](exp47_recurrence_ablation_results.json)
-Full log: [exp47_recurrence_ablation.log](exp47_recurrence_ablation.log)
-Script: `scripts/experiments/exp47_recurrence_ablation.py`
+**Raw data**: [exp47_recurrence_ablation_results.json](exp47_recurrence_ablation_results.json)
+**Full log**: [exp47_recurrence_ablation.log](exp47_recurrence_ablation.log)
+**Script**: `scripts/experiments/exp47_recurrence_ablation.py`

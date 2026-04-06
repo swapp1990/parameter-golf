@@ -33,11 +33,11 @@ Similarly, blocks 3 and 4 see the same data three times. Each pass refines the r
 
 Because depth matters — and the model is catastrophically dependent on its recurrence passes.
 
-We ran a full ablation study (see [exp47_recurrence_ablation.md](exp47_recurrence_ablation.md)) evaluating the trained exp40-D checkpoint with different layer schedules. Using the same 7 trained blocks but varying how many times each is called:
+We ran a full ablation study (see [exp47_recurrence_ablation.md](exp47_recurrence_ablation.md)) evaluating the trained exp40-D checkpoint with different layer schedules. The model was trained with `[0,1,2,3,4,3,4,3,4,5,6,5,6]` (13 effective layers, blocks 3-4 used 3x, blocks 5-6 used 2x). We call this **schedule A**. At inference time, we kept the same 7 trained blocks but varied how many times each is called:
 
 | Schedule | Eff Layers | val_bpb | Delta vs trained schedule |
 |----------|-----------|---------|--------------------------|
-| **A: Full 3x (as trained)** | **13** | **1.1493** | **baseline** |
+| **A: Full 3x `[0,1,2,3,4,3,4,3,4,5,6,5,6]` (as trained)** | **13** | **1.1493** | **baseline** |
 | B: 2x recurrence | 11 | 1.6919 | +0.543 (broken) |
 | C: No recurrence | 7 | 2.7739 | +1.625 (destroyed) |
 | D: 3x middle only | 11 | 2.6173 | +1.468 (destroyed) |

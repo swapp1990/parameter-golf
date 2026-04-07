@@ -194,11 +194,23 @@ Gave B6 int8 instead of int6. Full val set pre-TTT eval (62M tokens, determinist
 - **Exp 53 (QK-Gain=4.0)**: CONFIRMED improvement. Include in next full training.
 - **Exp 54 (batch=786K)**: WORSE at short runs. Needs 2000+ step test to verify if it helps at convergence.
 
+### Phase 1: Exp 49 — SCORE_CAP (FREE IMPROVEMENT)
+
+500-doc TTT eval with different scoring windows. No retraining.
+
+| SCORE_CAP | val_bpb | Delta | Time |
+|-----------|---------|-------|------|
+| 2048 (current) | 1.1385 | — | 35s |
+| **4096** | **1.1369** | **-0.0017** | 30s |
+| 8192 | 1.1372 | -0.0013 | 30s |
+
+**Verdict**: SCORE_CAP=4096 is a free -0.0017 BPB improvement. Also slightly faster. Diminishing returns past 4096. Full 50K eval running to confirm.
+
 ### Still to run
 
 | Experiment | Status |
 |-----------|--------|
-| Exp 49 (SCORE_CAP=4096) | Not started |
+| Exp 49 full 50K eval | Running |
 | Exp 51 (per-pass resid_mix) | Not started |
 | Exp 52 (per-pass LoRA) | Not started |
 
@@ -224,5 +236,6 @@ Run exp 51/52 on 1xH100 while starting a full training run on another pod.
 | Experiment | Predicted | Actual | Correct? |
 |-----------|-----------|--------|----------|
 | Exp 48 (B6 int8 GPTQ) | -0.003 | -0.0002 | WRONG — GPTQ already handles B6 |
+| Exp 49 (SCORE_CAP=4096) | -0.001 | **-0.0017 on 500 docs** | RIGHT — small free gain |
 | Exp 53 (QK-Gain=4.0) | -0.007 | **-0.006 at step 500** | ~RIGHT |
 | Exp 54 (Batch=786K) | -0.005 | **+0.04 worse at matched wallclock** | WRONG — hurts at short runs |

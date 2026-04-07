@@ -204,13 +204,19 @@ Gave B6 int8 instead of int6. Full val set pre-TTT eval (62M tokens, determinist
 | **4096** | **1.1369** | **-0.0017** | 30s |
 | 8192 | 1.1372 | -0.0013 | 30s |
 
-**Verdict**: SCORE_CAP=4096 is a free -0.0017 BPB improvement. Also slightly faster. Diminishing returns past 4096. Full 50K eval running to confirm.
+**500-doc result was misleading.** Full 50K eval:
+
+| SCORE_CAP | 500 docs | 50K docs |
+|-----------|---------|---------|
+| 2048 | 1.1385 | 1.1172 |
+| 4096 | 1.1369 (-0.0017) | **1.1214 (+0.0042 WORSE)** |
+
+Scoring more tokens hurts on the full dataset. The extra positions (2049-4096) include tokens the model just trained on via SGD TTT, diluting the BPB metric. **Dead end.**
 
 ### Still to run
 
 | Experiment | Status |
 |-----------|--------|
-| Exp 49 full 50K eval | Running |
 | Exp 51 (per-pass resid_mix) | Not started |
 | Exp 52 (per-pass LoRA) | Not started |
 
@@ -236,6 +242,6 @@ Run exp 51/52 on 1xH100 while starting a full training run on another pod.
 | Experiment | Predicted | Actual | Correct? |
 |-----------|-----------|--------|----------|
 | Exp 48 (B6 int8 GPTQ) | -0.003 | -0.0002 | WRONG — GPTQ already handles B6 |
-| Exp 49 (SCORE_CAP=4096) | -0.001 | **-0.0017 on 500 docs** | RIGHT — small free gain |
+| Exp 49 (SCORE_CAP=4096) | -0.001 | **+0.0042 on 50K docs** | WRONG — 500-doc test was misleading |
 | Exp 53 (QK-Gain=4.0) | -0.007 | **-0.006 at step 500** | ~RIGHT |
 | Exp 54 (Batch=786K) | -0.005 | **+0.04 worse at matched wallclock** | WRONG — hurts at short runs |

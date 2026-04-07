@@ -156,42 +156,73 @@ These modify the architecture or training and need short smoke tests. ~10-15 min
 
 ---
 
-## Recommended Execution Order
+## Results So Far
 
-### Phase 1: No-retraining tests (same day, ~$4 total)
+### Phase 1: Exp 48 — Per-block GPTQ (DEAD END)
 
-| Order | Experiment | Time | Why first |
-|-------|-----------|------|-----------|
-| 1 | **Exp 48**: Per-block GPTQ for B6 | 30 min | Cheapest, directly data-motivated |
-| 2 | **Exp 49**: SCORE_CAP=4096 | 30 min | Quick eval change |
+Gave B6 int8 instead of int6. Full val set pre-TTT eval (62M tokens, deterministic):
 
-### Phase 2: Quick smoke tests (next day, ~$5 total)
+| Variant | Pre-TTT val_bpb | Delta |
+|---------|----------------|-------|
+| A: All int6 (baseline) | 1.164032 | — |
+| B: B6 at int8 | 1.163826 | -0.0002 |
 
-Run all 4 in parallel on 1xH100 (sequential, 500 steps each ≈ 40 min total):
+**Verdict**: GPTQ already optimizes B6's rounding at int6. Extra bits add nothing. Dead end.
 
-| Order | Experiment | Time | Why |
-|-------|-----------|------|-----|
-| 3 | **Exp 53**: QK-Gain=4.0 | 10 min | Externally validated, zero risk |
-| 4 | **Exp 54**: Batch=786K | 10 min | Externally validated, zero risk |
-| 5 | **Exp 51**: Per-pass resid_mix | 10 min | Cheapest architecture test |
-| 6 | **Exp 52**: Per-pass LoRA (Q/V on B3-B4) | 10 min | Most motivated by data |
+### Phase 2: Exp 53/54 — QK-Gain and Batch Size
 
-### Phase 3: Full training of winners (following days)
+700-second training runs on 1xH100. Full analysis: [exp53_54_smoke_test_results.md](exp53_54_smoke_test_results.md)
 
-Take the best 2-3 results from Phase 2 and combine them into a full training run (240 min). Then apply GPTQ (with per-block allocation if exp48 works) and SGD TTT eval.
+**At matched steps (step 500, same tokens):**
 
-**Target**: val_bpb < 1.110 (close or beat SOTA)
+| | val_bpb | Delta vs baseline |
+|-|---------|-------------------|
+| Baseline (QK=1.5, batch=524K) | 1.4256 | — |
+| Exp 53 (QK=4.0) | 1.4196 | **-0.006** |
+
+**At matched wallclock (700s):**
+
+| | Steps | val_bpb | Delta |
+|-|-------|---------|-------|
+| Baseline (est.) | ~720 | ~1.33 | — |
+| Exp 53 (QK=4.0) | 718 | **1.3299** | ~-0.003 |
+| Exp 54 (batch=786K) | 491 | 1.3709 | ~+0.04 (WORSE) |
+
+**Key finding**: Batch=786K is worse at 700 steps because the 47% slower step time means fewer gradient updates. QK-Gain=4.0 is a consistent winner.
+
+**Verdicts**:
+- **Exp 53 (QK-Gain=4.0)**: CONFIRMED improvement. Include in next full training.
+- **Exp 54 (batch=786K)**: WORSE at short runs. Needs 2000+ step test to verify if it helps at convergence.
+
+### Still to run
+
+| Experiment | Status |
+|-----------|--------|
+| Exp 49 (SCORE_CAP=4096) | Not started |
+| Exp 51 (per-pass resid_mix) | Not started |
+| Exp 52 (per-pass LoRA) | Not started |
 
 ---
 
-## Predictions
+## Recommended Next Steps
 
-| Experiment | Predicted gain | Confidence | Rationale |
-|-----------|---------------|------------|-----------|
-| Exp 48 (B6 int8 GPTQ) | -0.003 | Medium | B6 is 63% of predictions but no retraining |
-| Exp 49 (SCORE_CAP=4096) | -0.001 | Low | More context helps but SGD TTT already adapts |
-| Exp 51 (per-pass resid_mix) | -0.008 | Medium | Answers real bottleneck, minimal params |
-| Exp 52 (per-pass LoRA) | -0.015 | Medium-High | Strongest motivation from loss probing data |
-| Exp 53 (QK-Gain=4.0) | -0.007 | High | Competition-validated |
-| Exp 54 (Batch=786K) | -0.005 | High | Competition-validated |
-| Combined (best of above) | -0.015 to -0.025 | Medium | If top 3 stack, closes SOTA gap |
+### Option A: Run exp 51/52 smoke tests (1 hour, ~$3)
+Test per-pass resid_mix and LoRA. These are our original architecture ideas from the depth recurrence analysis. If either shows signal at 500 steps, combine with QK-Gain=4.0 for full training.
+
+### Option B: Full training with QK-Gain=4.0 now (4 hours, ~$11)
+We have one confirmed winner. Train 240 min with QK-Gain=4.0 + batch=524K, apply GPTQ + TTT. Expected result: val_bpb ~1.113-1.116.
+
+### Option C: Both in parallel
+Run exp 51/52 on 1xH100 while starting a full training run on another pod.
+
+**Target**: val_bpb < 1.110
+
+---
+
+## Predictions vs Actuals
+
+| Experiment | Predicted | Actual | Correct? |
+|-----------|-----------|--------|----------|
+| Exp 48 (B6 int8 GPTQ) | -0.003 | -0.0002 | WRONG — GPTQ already handles B6 |
+| Exp 53 (QK-Gain=4.0) | -0.007 | **-0.006 at step 500** | ~RIGHT |
+| Exp 54 (Batch=786K) | -0.005 | **+0.04 worse at matched wallclock** | WRONG — hurts at short runs |

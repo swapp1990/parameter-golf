@@ -2,6 +2,9 @@
 
 **val_bpb = 1.0825** (3-seed mean, std 0.0012) | **~15.6 MB** | 8xH100 SXM, 600s training + 355s TTT eval
 
+For a full technical writeup (winning stack + journey from 1.1172 → 1.0825), see:
+https://github.com/swapp1990/parameter-golf/blob/submission/sp8192-11l-gptq-sdclip-ttt/dashboard/technical_report_record_submission.md
+
 ## 3-Seed Results
 
 | Seed | Steps | ms/step | Raw BPB | **TTT BPB** | Artifact |

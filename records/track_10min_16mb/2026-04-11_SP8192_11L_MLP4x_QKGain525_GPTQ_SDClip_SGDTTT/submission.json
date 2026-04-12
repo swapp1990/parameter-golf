@@ -1,0 +1,28 @@
+{
+  "author": "swapp1990",
+  "github_id": "swapp1990",
+  "name": "SP8192 + 11L MLP4x + QK-Gain 5.25 + GPTQ SDClip + SGD All-Weights TTT",
+  "date": "2026-04-11",
+  "track": "10min_16mb",
+  "val_bpb": 1.08247,
+  "val_bpb_std": 0.00115,
+  "seeds": [314, 42, 999],
+  "seed_results": {
+    "314": {"val_bpb": 1.0836, "artifact_bytes": 15597303, "steps": 7358, "step_avg_ms": 81.55, "train_time_ms": 600072, "eval_time_ms": 355100},
+    "42": {"val_bpb": 1.0825, "artifact_bytes": 15573548, "steps": 7364, "step_avg_ms": 81.49, "train_time_ms": 600066, "eval_time_ms": 353726},
+    "999": {"val_bpb": 1.0813, "artifact_bytes": 15637199, "steps": 7361, "step_avg_ms": 81.52, "train_time_ms": 600043, "eval_time_ms": 350556}
+  },
+  "hardware": "8xH100 80GB SXM",
+  "bytes_total": 15637199,
+  "technique_summary": "SP8192 + 11L x 512d x 4x LeakyReLU² MLP + QK-Gain 5.25 + EMA 0.9965 + WD 0.095 + Warmdown 72% + GPTQ SDClip (int6 k=12.85, int8 embed k=20) + Byte-Shuffle + Brotli-11 + SGD All-Weights TTT (lr=0.005, momentum=0.9, chunk=2048, score_cap=2048)",
+  "compliance": {
+    "train_under_600s": true,
+    "artifact_under_16mb": true,
+    "eval_under_600s": true,
+    "no_slot": true,
+    "no_pre_quant_ttt": true,
+    "no_etlb": true,
+    "no_ngram_cache": true,
+    "three_seeds": true
+  }
+}

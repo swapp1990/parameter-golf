@@ -114,6 +114,11 @@ class Hyperparameters:
     # Empty string = no recurrence (use num_layers unique blocks as normal)
     layer_schedule_str = os.environ.get("LAYER_SCHEDULE", "")
     layer_schedule = [int(x) for x in layer_schedule_str.split(",") if x.strip()] if layer_schedule_str else []
+    # Progressive depth recurrence: phase1 is the initial schedule (typically no recurrence),
+    # phase2 activates at RECURRENCE_ACTIVATE_AT fraction of iterations.
+    layer_schedule_phase2_str = os.environ.get("LAYER_SCHEDULE_PHASE2", "")
+    layer_schedule_phase2 = [int(x) for x in layer_schedule_phase2_str.split(",") if x.strip()] if layer_schedule_phase2_str else []
+    recurrence_activate_at = float(os.environ.get("RECURRENCE_ACTIVATE_AT", 0.0))
 
     # QAT (Quantization-Aware Training) config
     qat_enabled = int(os.environ.get("QAT_ENABLED", 0))
@@ -949,6 +954,7 @@ class GPT(nn.Module):
         ngram_dim: int = 64,
         xsa_last_n: int = 4,
         layer_schedule: list = None,
+        layer_schedule_phase2: list = None,
         activation: str = "leakyrelu2",
     ):
         super().__init__()
@@ -961,21 +967,25 @@ class GPT(nn.Module):
         self.ngram = NgramHashEmbedding(ngram_n, ngram_buckets, ngram_dim, model_dim) if ngram_n > 0 else None
         self.smear = SmearGate(model_dim)
 
-        # Depth recurrence: layer_schedule defines the forward pass order
-        # If empty/None, use num_layers unique blocks (standard behavior)
-        if layer_schedule:
-            self.layer_schedule = layer_schedule
-            num_unique_blocks = max(layer_schedule) + 1
-            effective_layers = len(layer_schedule)
-        else:
-            self.layer_schedule = list(range(num_layers))
-            num_unique_blocks = num_layers
-            effective_layers = num_layers
+        # Depth recurrence: layer_schedule (phase1) + optional phase2 that activates mid-training.
+        phase1 = layer_schedule if layer_schedule else list(range(num_layers))
+        phase2 = layer_schedule_phase2 if layer_schedule_phase2 else phase1
+        max_schedule = phase2 if len(phase2) >= len(phase1) else phase1
+        self.layer_schedule_phase1 = phase1
+        self.layer_schedule_phase2 = phase2
+        self.layer_schedule = list(phase1)
+        num_unique_blocks = max(max(max_schedule), num_layers - 1) + 1
+        max_effective = len(max_schedule)
 
-        self.num_encoder_layers = effective_layers // 2
-        self.num_decoder_layers = effective_layers - self.num_encoder_layers
-        self.num_skip_weights = min(self.num_encoder_layers, self.num_decoder_layers)
+        # Dynamic (set by set_phase). Init for phase1.
+        self.num_encoder_layers = len(phase1) // 2
+        self.num_decoder_layers = len(phase1) - self.num_encoder_layers
+        # skip_weights sized for max schedule so phase2 has enough slots.
+        max_enc = max_effective // 2
+        max_dec = max_effective - max_enc
+        self.num_skip_weights = min(max_enc, max_dec)
         self.skip_weights = nn.Parameter(torch.ones(self.num_skip_weights, model_dim, dtype=torch.float32))
+        self._recurrence_phase = 1
         self.blocks = nn.ModuleList(
             [
                 Block(
@@ -1011,6 +1021,15 @@ class GPT(nn.Module):
                     if ".proj." in name or name.endswith(".proj"):
                         with torch.no_grad():
                             module.weight.mul_(1.0 / math.sqrt(2 * num_layers))
+
+    def set_recurrence_phase(self, phase: int) -> None:
+        if phase == self._recurrence_phase:
+            return
+        self._recurrence_phase = phase
+        self.layer_schedule = list(self.layer_schedule_phase2 if phase == 2 else self.layer_schedule_phase1)
+        eff = len(self.layer_schedule)
+        self.num_encoder_layers = eff // 2
+        self.num_decoder_layers = eff - self.num_encoder_layers
 
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         x = self.tok_emb(input_ids)
@@ -1161,6 +1180,7 @@ def main() -> None:
         ngram_dim=args.ngram_dim,
         xsa_last_n=args.xsa_last_n,
         layer_schedule=args.layer_schedule if args.layer_schedule else None,
+        layer_schedule_phase2=args.layer_schedule_phase2 if args.layer_schedule_phase2 else None,
         activation=args.activation,
     ).to(device).bfloat16()
     for module in base_model.modules():
@@ -1348,8 +1368,17 @@ def main() -> None:
     torch.cuda.synchronize()
     t0 = time.perf_counter()
 
+    phase_swap_step = int(args.recurrence_activate_at * args.iterations) if args.recurrence_activate_at > 0 and args.layer_schedule_phase2 else -1
+    if phase_swap_step > 0:
+        log0(f"recurrence: phase2 swap scheduled at step {phase_swap_step} (schedule len {len(args.layer_schedule_phase2)})")
+    _phase2_logged = False
+
     step = resume_step
     while True:
+        if phase_swap_step > 0 and step >= phase_swap_step and not _phase2_logged:
+            base_model.set_recurrence_phase(2)
+            log0(f"recurrence: phase2 activated at step {step}")
+            _phase2_logged = True
         last_step = step == args.iterations or (stop_after_step is not None and step >= stop_after_step)
 
         should_validate = last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0)
@@ -1668,6 +1697,7 @@ def main() -> None:
                 ngram_buckets=args.ngram_buckets, ngram_dim=args.ngram_dim,
                 xsa_last_n=args.xsa_last_n,
                 layer_schedule=args.layer_schedule if args.layer_schedule else None,
+                layer_schedule_phase2=args.layer_schedule_phase2 if args.layer_schedule_phase2 else None,
                 activation=args.activation,
             ).to(device).float()
             ttt_model.load_state_dict({k: v.to(device).float() for k, v in gptq_float_state.items()}, strict=True)

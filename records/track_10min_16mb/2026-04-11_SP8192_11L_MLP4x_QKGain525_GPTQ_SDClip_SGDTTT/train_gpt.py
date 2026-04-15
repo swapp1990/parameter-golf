@@ -781,9 +781,16 @@ class Rotary(nn.Module):
 
 
 def apply_rotary_emb(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
-    half = x.size(-1) // 2
-    x1, x2 = x[..., :half], x[..., half:]
-    return torch.cat((x1 * cos + x2 * sin, x1 * (-sin) + x2 * cos), dim=-1)
+    rope_d = cos.size(-1) * 2
+    if rope_d == x.size(-1):
+        half = rope_d // 2
+        x1, x2 = x[..., :half], x[..., half:]
+        return torch.cat((x1 * cos + x2 * sin, x1 * (-sin) + x2 * cos), dim=-1)
+    x_rot, x_pass = x[..., :rope_d], x[..., rope_d:]
+    half = rope_d // 2
+    x1, x2 = x_rot[..., :half], x_rot[..., half:]
+    rotated = torch.cat((x1 * cos + x2 * sin, x1 * (-sin) + x2 * cos), dim=-1)
+    return torch.cat((rotated, x_pass), dim=-1)
 
 
 class CausalSelfAttention(nn.Module):
@@ -813,7 +820,11 @@ class CausalSelfAttention(nn.Module):
         self.proj = CastedLinear(dim, dim, bias=False)
         self.proj._zero_init = True
         self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
-        self.rotary = Rotary(self.head_dim, base=rope_base)
+        rope_dims_env = int(os.environ.get("ROPE_DIMS", self.head_dim))
+        self.rope_dims = max(2, min(rope_dims_env, self.head_dim))
+        if self.rope_dims % 2 != 0:
+            raise ValueError("ROPE_DIMS must be even")
+        self.rotary = Rotary(self.rope_dims, base=rope_base)
         self.use_xsa = use_xsa
 
     def forward(self, x: Tensor) -> Tensor:
@@ -1377,6 +1388,9 @@ def main() -> None:
     while True:
         if phase_swap_step > 0 and step >= phase_swap_step and not _phase2_logged:
             base_model.set_recurrence_phase(2)
+            if args.ema_enabled and hasattr(base_model, '_ema_state'):
+                base_model._ema_state = {n: p.detach().clone().float() for n, p in base_model.state_dict().items()}
+                log0(f"EMA: reset at phase2 swap (step {step})")
             log0(f"recurrence: phase2 activated at step {step}")
             _phase2_logged = True
         last_step = step == args.iterations or (stop_after_step is not None and step >= stop_after_step)
